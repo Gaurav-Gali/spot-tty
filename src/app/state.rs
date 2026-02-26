@@ -1,7 +1,3 @@
-pub struct NavigationState {
-    pub selected_index: usize,
-}
-
 #[derive(Clone)]
 pub enum ExplorerNode {
     PlaylistTracks(String),
@@ -21,6 +17,10 @@ pub enum Focus {
     Explorer,
 }
 
+pub struct NavigationState {
+    pub selected_index: usize,
+}
+
 pub struct AppState {
     pub should_quit: bool,
 
@@ -32,8 +32,10 @@ pub struct AppState {
     pub focus: Focus,
 
     pub pending_count: Option<usize>,
-    pub awaiting_gg: bool,
 
-    // NEW
-    pub playback_progress: f64,
+    // ─────────────────────────────────────────────
+    // Animation State
+    // ─────────────────────────────────────────────
+    pub playback_progress: f64, // 0.0 → 1.0
+    pub visualizer_phase: usize,
 }

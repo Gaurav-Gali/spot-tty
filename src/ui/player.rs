@@ -54,13 +54,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         height: inner.height,
     };
 
+    // Layout: playhead | sweep | gap | visualizer
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(14), // playhead
-            Constraint::Min(10),    // sweep
-            Constraint::Length(4),  // gap
-            Constraint::Length(16), // visualizer
+            Constraint::Length(14),
+            Constraint::Min(10),
+            Constraint::Length(4),
+            Constraint::Length(16),
         ])
         .split(padded);
 
@@ -69,18 +70,16 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let visualizer_area = layout[3];
 
     // ─────────────────────────────────────────────
-    // Subtle Base Sweep Background
+    // Base Sweep Background
     // ─────────────────────────────────────────────
 
     frame.render_widget(
-        Block::default().style(
-            Style::default().bg(Color::Rgb(25, 40, 25)), // subtle dark green base
-        ),
+        Block::default().style(Style::default().bg(Color::Rgb(20, 35, 20))),
         sweep_area,
     );
 
     // ─────────────────────────────────────────────
-    // Filled Progress
+    // Filled Sweep
     // ─────────────────────────────────────────────
 
     let progress = state.playback_progress.clamp(0.0, 1.0);
@@ -101,7 +100,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     // ─────────────────────────────────────────────
-    // Foreground
+    // Playhead Text
     // ─────────────────────────────────────────────
 
     frame.render_widget(
@@ -109,8 +108,20 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         playhead_area,
     );
 
+    // ─────────────────────────────────────────────
+    // Animated Visualizer
+    // ─────────────────────────────────────────────
+
+    let bars = ["▂", "▅", "▇", "▆", "▃", "▂", "▇", "▅", "▃", "▂"];
+
+    let mut visual = String::new();
+    for i in 0..10 {
+        let index = (state.visualizer_phase + i) % bars.len();
+        visual.push_str(bars[index]);
+    }
+
     frame.render_widget(
-        Paragraph::new("▂▅▇▆▃▂▇▅▃▂").style(Style::default().fg(Color::Green)),
+        Paragraph::new(visual).style(Style::default().fg(Color::Green)),
         visualizer_area,
     );
 }

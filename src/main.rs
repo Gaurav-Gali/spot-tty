@@ -1,5 +1,5 @@
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -33,9 +33,26 @@ async fn main() -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut app = App::new();
 
+    let tick_rate = Duration::from_millis(80);
+    let mut last_tick = Instant::now();
+
     loop {
         // ─────────────────────────────────────────────
-        // DRAW
+        // Animation Tick
+        // ─────────────────────────────────────────────
+        if last_tick.elapsed() >= tick_rate {
+            last_tick = Instant::now();
+
+            app.state.playback_progress += 0.01;
+            if app.state.playback_progress > 1.0 {
+                app.state.playback_progress = 0.0;
+            }
+
+            app.state.visualizer_phase = (app.state.visualizer_phase + 1) % 1000;
+        }
+
+        // ─────────────────────────────────────────────
+        // Draw
         // ─────────────────────────────────────────────
         terminal.draw(|frame| {
             let areas = ui::layout::split(frame.size());
@@ -46,11 +63,10 @@ async fn main() -> anyhow::Result<()> {
         })?;
 
         // ─────────────────────────────────────────────
-        // INPUT
+        // Input
         // ─────────────────────────────────────────────
-        if event::poll(Duration::from_millis(50))? {
+        if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
-                // Numeric prefix handling (e.g., 33j)
                 if let KeyCode::Char(c) = key.code {
                     if c.is_ascii_digit() {
                         let digit = c.to_digit(10).unwrap() as usize;
@@ -63,65 +79,35 @@ async fn main() -> anyhow::Result<()> {
                 let count = app.state.pending_count.take().unwrap_or(1);
 
                 match app.state.key_mode {
-                    KeyMode::Normal => {
-                        match key.code {
-                            // Movement
-                            KeyCode::Char('j') | KeyCode::Down => {
-                                tx.send(AppEvent::MoveDown(count))?
-                            }
-
-                            KeyCode::Char('k') | KeyCode::Up => tx.send(AppEvent::MoveUp(count))?,
-
-                            // Go bottom
-                            KeyCode::Char('G') => tx.send(AppEvent::GoBottom)?,
-
-                            // Go middle
-                            KeyCode::Char('M') => tx.send(AppEvent::GoMiddle)?,
-
-                            // g prefix handling
-                            KeyCode::Char('g') => {
-                                app.state.key_mode = KeyMode::AwaitingG;
-                            }
-
-                            // Focus right
-                            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-                                tx.send(AppEvent::Enter)?
-                            }
-
-                            // Focus left
-                            KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-                                tx.send(AppEvent::Back)?
-                            }
-
-                            // Quit
-                            KeyCode::Char('q') => tx.send(AppEvent::Quit)?,
-
-                            _ => {}
+                    KeyMode::Normal => match key.code {
+                        KeyCode::Char('j') | KeyCode::Down => tx.send(AppEvent::MoveDown(count))?,
+                        KeyCode::Char('k') | KeyCode::Up => tx.send(AppEvent::MoveUp(count))?,
+                        KeyCode::Char('G') => tx.send(AppEvent::GoBottom)?,
+                        KeyCode::Char('M') => tx.send(AppEvent::GoMiddle)?,
+                        KeyCode::Char('g') => app.state.key_mode = KeyMode::AwaitingG,
+                        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+                            tx.send(AppEvent::Enter)?
                         }
-                    }
-
+                        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+                            tx.send(AppEvent::Back)?
+                        }
+                        KeyCode::Char('q') => tx.send(AppEvent::Quit)?,
+                        _ => {}
+                    },
                     KeyMode::AwaitingG => {
                         match key.code {
                             KeyCode::Char('g') => tx.send(AppEvent::GoTop)?,
-
                             KeyCode::Char('p') => tx.send(AppEvent::JumpToPlaylists)?,
-
                             KeyCode::Char('l') => tx.send(AppEvent::JumpToLiked)?,
-
                             KeyCode::Char('a') => tx.send(AppEvent::JumpToArtists)?,
-
                             _ => {}
                         }
-
                         app.state.key_mode = KeyMode::Normal;
                     }
                 }
             }
         }
 
-        // ─────────────────────────────────────────────
-        // EVENT PROCESSING
-        // ─────────────────────────────────────────────
         while let Ok(event) = rx.try_recv() {
             app.handle_event(event);
         }
@@ -131,9 +117,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // ─────────────────────────────────────────────
-    // CLEANUP
-    // ─────────────────────────────────────────────
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;

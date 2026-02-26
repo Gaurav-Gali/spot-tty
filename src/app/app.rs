@@ -21,10 +21,10 @@ impl App {
                 focus: Focus::Sidebar,
 
                 pending_count: None,
-                awaiting_gg: false,
 
-                // example static progress
-                playback_progress: 0.35,
+                // Animation initial state
+                playback_progress: 0.0,
+                visualizer_phase: 0,
             },
         }
     }
