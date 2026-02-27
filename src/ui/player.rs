@@ -12,7 +12,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // Title / breadcrumb
     // ─────────────────────────────────────────────
     let breadcrumb = match state.explorer_stack.last() {
-        Some(ExplorerNode::PlaylistTracks(_, name)) => {
+        Some(ExplorerNode::PlaylistTracks(_, name, _)) => {
             format!("Library › Playlist › {}", name)
         }
         Some(ExplorerNode::ArtistAlbums(_, name)) => {

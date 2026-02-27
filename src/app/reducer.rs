@@ -81,13 +81,15 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             update_sidebar_selection(state);
             state.key_mode = KeyMode::Normal;
         }
-        AppEvent::JumpToLiked => {
+        AppEvent::JumpToArtists => {
+            // Artists now come right after playlists
             state.navigation.selected_index = state.playlists.len();
             update_sidebar_selection(state);
             state.key_mode = KeyMode::Normal;
         }
-        AppEvent::JumpToArtists => {
-            state.navigation.selected_index = state.playlists.len() + 1;
+        AppEvent::JumpToLiked => {
+            // Liked Songs is last: after playlists + artists
+            state.navigation.selected_index = state.playlists.len() + state.artists.len();
             update_sidebar_selection(state);
             state.key_mode = KeyMode::Normal;
         }
@@ -130,11 +132,11 @@ fn set_cursor(state: &mut AppState, idx: usize) {
 fn max_index(state: &AppState) -> usize {
     match state.focus {
         Focus::Sidebar => {
-            // playlists + 1 liked songs row + artists, minus 1 for 0-based
-            (state.playlists.len() + 1 + state.artists.len()).saturating_sub(1)
+            // playlists + artists + 1 liked songs row, minus 1 for 0-based
+            (state.playlists.len() + state.artists.len() + 1).saturating_sub(1)
         }
         Focus::Explorer => match state.explorer_stack.last() {
-            Some(ExplorerNode::PlaylistTracks(_, _)) => {
+            Some(ExplorerNode::PlaylistTracks(_, _, _)) => {
                 state.explorer_items.len().saturating_sub(1)
             }
             Some(ExplorerNode::ArtistAlbums(_, _)) => state.explorer_albums.len().saturating_sub(1),
@@ -146,29 +148,56 @@ fn max_index(state: &AppState) -> usize {
 
 fn update_sidebar_selection(state: &mut AppState) {
     let idx = state.navigation.selected_index;
-    state.explorer_selected_index = 0;
-    state.explorer_stack.clear();
-    state.explorer_items.clear();
-    state.explorer_albums.clear();
-
     let pl_len = state.playlists.len();
+    let ar_len = state.artists.len();
 
-    if idx < pl_len {
+    // Build what the new node should be
+    let new_node = if idx < pl_len {
+        // Playlist row
         let pl = &state.playlists[idx];
-        state
-            .explorer_stack
-            .push(ExplorerNode::PlaylistTracks(pl.id.clone(), pl.name.clone()));
-    } else if idx == pl_len {
-        state.explorer_stack.push(ExplorerNode::LikedTracks);
-        state.explorer_items = state.liked_tracks.clone();
-    } else {
-        let artist_idx = idx - pl_len - 1;
+        ExplorerNode::PlaylistTracks(pl.id.clone(), pl.name.clone(), pl.owner)
+    } else if idx < pl_len + ar_len {
+        // Artist row
+        let artist_idx = idx - pl_len;
         if let Some(artist) = state.artists.get(artist_idx) {
-            state.explorer_stack.push(ExplorerNode::ArtistAlbums(
-                artist.id.clone(),
-                artist.name.clone(),
-            ));
+            ExplorerNode::ArtistAlbums(artist.id.clone(), artist.name.clone())
+        } else {
+            return;
         }
+    } else {
+        // Liked Songs (last row)
+        ExplorerNode::LikedTracks
+    };
+
+    // Only reset explorer content when the node actually changes
+    let node_changed = match state.explorer_stack.last() {
+        None => true,
+        Some(current) => !nodes_equal(current, &new_node),
+    };
+
+    state.explorer_stack.clear();
+    state.explorer_stack.push(new_node);
+    state.explorer_selected_index = 0;
+
+    if node_changed {
+        state.explorer_items.clear();
+        state.explorer_albums.clear();
+
+        // Seed liked tracks immediately from state (no async fetch needed)
+        if matches!(state.explorer_stack.last(), Some(ExplorerNode::LikedTracks)) {
+            state.explorer_items = state.liked_tracks.clone();
+        }
+    }
+}
+
+fn nodes_equal(a: &ExplorerNode, b: &ExplorerNode) -> bool {
+    match (a, b) {
+        (ExplorerNode::PlaylistTracks(id1, _, _), ExplorerNode::PlaylistTracks(id2, _, _)) => {
+            id1 == id2
+        }
+        (ExplorerNode::ArtistAlbums(id1, _), ExplorerNode::ArtistAlbums(id2, _)) => id1 == id2,
+        (ExplorerNode::LikedTracks, ExplorerNode::LikedTracks) => true,
+        _ => false,
     }
 }
 

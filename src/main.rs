@@ -1,14 +1,16 @@
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+
 use ratatui::{backend::CrosstermBackend, Terminal};
 use rspotify::AuthCodePkceSpotify;
 use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration};
 
 mod app;
 mod cache;
@@ -25,23 +27,19 @@ use app::{
 use config::settings::Settings;
 use services::{auth, spotify as svc};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Main
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // ── Logging (writes to a file so it doesn't pollute the TUI) ─────────
+    // Logging
     let log_file = std::fs::File::create("/tmp/spot-tty.log")?;
     tracing_subscriber::fmt()
         .with_writer(log_file)
         .with_ansi(false)
         .init();
 
-    // ── Load config ───────────────────────────────────────────────────────
+    // Config
     let settings = Settings::load()?;
 
-    // ── Auth (before entering raw mode so the browser URL prints cleanly) ─
+    // Auth
     let spotify: AuthCodePkceSpotify = auth::authenticate(
         &settings.client_id,
         &settings.client_secret,
@@ -49,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // ── Enter TUI ─────────────────────────────────────────────────────────
+    // TUI setup
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -59,18 +57,16 @@ async fn main() -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut app = App::new();
 
-    // ── Kick off initial parallel data fetches ────────────────────────────
     spawn_initial_fetches(spotify.clone(), tx.clone());
 
     let tick_rate = Duration::from_millis(80);
     let mut last_tick = Instant::now();
 
-    // Track what the last sidebar selection was so we only re-fetch when it
-    // changes (avoid hammering Spotify on every key event).
     let mut last_fetched_stack: Option<ExplorerNode> = None;
+    let mut explorer_fetch_in_progress = false;
 
     loop {
-        // ── Animation tick ────────────────────────────────────────────────
+        // Animation tick
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
             app.state.playback_progress += 0.01;
@@ -80,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
             app.state.visualizer_phase = (app.state.visualizer_phase + 1) % 1000;
         }
 
-        // ── Draw ──────────────────────────────────────────────────────────
+        // Draw
         terminal.draw(|frame| {
             let areas = ui::layout::split(frame.size());
             ui::sidebar::render(frame, areas.sidebar, &app.state);
@@ -88,23 +84,29 @@ async fn main() -> anyhow::Result<()> {
             ui::player::render(frame, areas.control, &app.state);
         })?;
 
-        // ── Drain event queue ─────────────────────────────────────────────
+        // Drain async events
         while let Ok(event) = rx.try_recv() {
+            match &event {
+                AppEvent::ExplorerTracksLoaded(_) | AppEvent::ExplorerAlbumsLoaded(_) => {
+                    explorer_fetch_in_progress = false;
+                }
+                _ => {}
+            }
             app.handle_event(event);
         }
 
-        // ── Lazy explorer fetch: triggered when the sidebar selection changes ──
+        // Lazy explorer fetch
         maybe_fetch_explorer(
             &app.state.explorer_stack.last().cloned(),
             &mut last_fetched_stack,
+            &mut explorer_fetch_in_progress,
             spotify.clone(),
             tx.clone(),
         );
 
-        // ── Input ─────────────────────────────────────────────────────────
+        // Input
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
-                // Digit accumulation for count prefix (e.g. 5j)
                 if let KeyCode::Char(c) = key.code {
                     if c.is_ascii_digit() {
                         let digit = c.to_digit(10).unwrap() as usize;
@@ -151,19 +153,14 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // ── Restore terminal ──────────────────────────────────────────────────
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Spawn the four parallel initial fetches as separate tasks
-// ─────────────────────────────────────────────────────────────────────────────
-
 fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender<AppEvent>) {
-    // User profile first — we need the user_id to correctly mark playlist ownership
     {
         let (sp, tx) = (spotify.clone(), tx.clone());
         tokio::spawn(async move {
@@ -172,7 +169,6 @@ fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender
                     let user_id = user.id.clone();
                     let _ = tx.send(AppEvent::UserLoaded(user.display_name));
 
-                    // Fetch playlists now that we have the user_id
                     match svc::fetch_playlists(&sp, &user_id).await {
                         Ok(pl) => {
                             let _ = tx.send(AppEvent::PlaylistsLoaded(pl));
@@ -192,10 +188,10 @@ fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender
         });
     }
 
-    // Liked tracks
     {
         let (sp, tx) = (spotify.clone(), tx.clone());
         tokio::spawn(async move {
+            sleep(Duration::from_millis(300)).await;
             match svc::fetch_liked_tracks(&sp).await {
                 Ok(tracks) => {
                     let _ = tx.send(AppEvent::LikedTracksLoaded(tracks));
@@ -208,10 +204,10 @@ fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender
         });
     }
 
-    // Followed artists
     {
         let (sp, tx) = (spotify.clone(), tx.clone());
         tokio::spawn(async move {
+            sleep(Duration::from_millis(600)).await;
             match svc::fetch_followed_artists(&sp).await {
                 Ok(artists) => {
                     let _ = tx.send(AppEvent::ArtistsLoaded(artists));
@@ -225,16 +221,17 @@ fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Lazy explorer fetch — fires only when the selected node changes
-// ─────────────────────────────────────────────────────────────────────────────
-
 fn maybe_fetch_explorer(
     current: &Option<ExplorerNode>,
     last: &mut Option<ExplorerNode>,
+    in_progress: &mut bool,
     spotify: AuthCodePkceSpotify,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
+    if *in_progress {
+        return;
+    }
+
     let should_fetch = match (current, last.as_ref()) {
         (None, _) => false,
         (Some(curr), None) => !matches!(curr, ExplorerNode::LikedTracks),
@@ -246,42 +243,50 @@ fn maybe_fetch_explorer(
     }
 
     *last = current.clone();
+    *in_progress = true;
 
     match current {
-        Some(ExplorerNode::PlaylistTracks(id, _)) => {
+        Some(ExplorerNode::PlaylistTracks(id, _, _)) => {
             let id = id.clone();
             tokio::spawn(async move {
                 match svc::fetch_playlist_tracks(&spotify, &id).await {
-                    Ok(tracks) => {
-                        let _ = tx.send(AppEvent::ExplorerTracksLoaded(tracks));
+                    Ok(t) => {
+                        let _ = tx.send(AppEvent::ExplorerTracksLoaded(t));
                     }
                     Err(e) => {
-                        let _ = tx.send(AppEvent::LoadError(format!("Playlist tracks: {e}")));
+                        tracing::error!("fetch_playlist_tracks: {e:#}");
+                        let _ = tx.send(AppEvent::ExplorerTracksLoaded(vec![]));
                     }
                 }
             });
         }
+
         Some(ExplorerNode::ArtistAlbums(id, _)) => {
             let id = id.clone();
             tokio::spawn(async move {
                 match svc::fetch_artist_albums(&spotify, &id).await {
-                    Ok(albums) => {
-                        let _ = tx.send(AppEvent::ExplorerAlbumsLoaded(albums));
+                    Ok(a) => {
+                        let _ = tx.send(AppEvent::ExplorerAlbumsLoaded(a));
                     }
                     Err(e) => {
-                        let _ = tx.send(AppEvent::LoadError(format!("Artist albums: {e}")));
+                        tracing::error!("fetch_artist_albums: {e:#}");
+                        let _ = tx.send(AppEvent::ExplorerAlbumsLoaded(vec![]));
                     }
                 }
             });
         }
-        // LikedTracks are already in state from the initial fetch — reducer handles it
-        _ => {}
+
+        _ => {
+            *in_progress = false;
+        }
     }
 }
 
 fn nodes_equal(a: &ExplorerNode, b: &ExplorerNode) -> bool {
     match (a, b) {
-        (ExplorerNode::PlaylistTracks(id1, _), ExplorerNode::PlaylistTracks(id2, _)) => id1 == id2,
+        (ExplorerNode::PlaylistTracks(id1, _, _), ExplorerNode::PlaylistTracks(id2, _, _)) => {
+            id1 == id2
+        }
         (ExplorerNode::ArtistAlbums(id1, _), ExplorerNode::ArtistAlbums(id2, _)) => id1 == id2,
         (ExplorerNode::LikedTracks, ExplorerNode::LikedTracks) => true,
         _ => false,

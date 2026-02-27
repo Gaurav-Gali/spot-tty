@@ -18,7 +18,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) 
     };
 
     let breadcrumb = match state.explorer_stack.last() {
-        Some(ExplorerNode::PlaylistTracks(_, name)) => {
+        Some(ExplorerNode::PlaylistTracks(_, name, _)) => {
             format!("Library › Playlist › {}", name)
         }
         Some(ExplorerNode::ArtistAlbums(_, name)) => {

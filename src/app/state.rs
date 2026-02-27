@@ -6,8 +6,8 @@ use crate::services::spotify::{ArtistSummary, PlaylistSummary, TrackSummary};
 
 #[derive(Clone)]
 pub enum ExplorerNode {
-    /// (playlist_id, display_name)
-    PlaylistTracks(String, String),
+    /// (playlist_id, display_name, is_owner)
+    PlaylistTracks(String, String, bool),
     /// (artist_id, display_name)
     ArtistAlbums(String, String),
     LikedTracks,

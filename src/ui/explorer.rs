@@ -1,4 +1,4 @@
-use crate::app::state::{AppState, AppStatus, ExplorerNode, Focus};
+use crate::app::state::{AppState, ExplorerNode, Focus};
 use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, ListState},
@@ -38,11 +38,20 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) 
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    // ── Build item rows from real state data ──────────────────────────────
+    // ── Build item list from state ────────────────────────────────────────
     let raw_items: Vec<String> = match state.explorer_stack.last() {
-        Some(ExplorerNode::PlaylistTracks(_, _)) | Some(ExplorerNode::LikedTracks) => {
-            if state.explorer_items.is_empty() && state.status == AppStatus::Loading {
-                vec!["Loading tracks…".to_string()]
+        Some(ExplorerNode::PlaylistTracks(_, _, _)) | Some(ExplorerNode::LikedTracks) => {
+            if state.explorer_items.is_empty() {
+                // Distinguish between "still loading" and "not owner so tracks unavailable"
+                let not_owner = matches!(
+                    state.explorer_stack.last(),
+                    Some(ExplorerNode::PlaylistTracks(_, _, false))
+                );
+                if not_owner {
+                    vec!["Track listing unavailable (not your playlist)".to_string()]
+                } else {
+                    vec!["Loading…".to_string()]
+                }
             } else {
                 state
                     .explorer_items
@@ -52,8 +61,8 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) 
             }
         }
         Some(ExplorerNode::ArtistAlbums(_, _)) => {
-            if state.explorer_albums.is_empty() && state.status == AppStatus::Loading {
-                vec!["Loading albums…".to_string()]
+            if state.explorer_albums.is_empty() {
+                vec!["Loading…".to_string()]
             } else {
                 state.explorer_albums.clone()
             }
@@ -61,21 +70,27 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) 
         None => vec!["Select an item from the sidebar".to_string()],
     };
 
-    let height = area.height as usize;
-    let mut rows: Vec<ListItem> = Vec::new();
+    let selected = state.explorer_selected_index;
 
-    for row in 0..height {
-        if row < raw_items.len() {
-            let number = (row as isize - state.explorer_selected_index as isize).abs() as usize;
-            rows.push(ListItem::new(format!("{:>3} │ {}", number, raw_items[row])));
-        } else {
-            rows.push(ListItem::new("    │"));
-        }
-    }
+    // ── Build rows with correct relative line numbers ─────────────────────
+    // The relative number for item at index `i` is |i - selected|.
+    // We build ALL items (not just visible height) and let ratatui handle
+    // scrolling via ListState — this way the highlight and numbers are always
+    // consistent regardless of scroll position.
+    let rows: Vec<ListItem> = raw_items
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let rel = (i as isize - selected as isize).unsigned_abs();
+            ListItem::new(format!("{:>3} │ {}", rel, text))
+        })
+        .collect();
 
     let mut list_state = ListState::default();
-    if is_active && !raw_items.is_empty() {
-        list_state.select(Some(state.explorer_selected_index));
+    if !raw_items.is_empty() {
+        // Always track selection position so ratatui knows where to scroll —
+        // even when the panel is inactive, so it stays in the right position.
+        list_state.select(Some(selected.min(raw_items.len().saturating_sub(1))));
     }
 
     let list = List::new(rows).block(block).highlight_style(highlight);

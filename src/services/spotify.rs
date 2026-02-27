@@ -1,27 +1,18 @@
-//! Spotify data fetching.
-//!
-//! Uses rspotify only for auth/token management.  All actual API calls go
-//! through reqwest directly so we are not constrained by rspotify's model
-//! structs, which predate Spotify's February 2026 dev-mode breaking changes.
-//!
-//! Key Feb-2026 dev-mode changes we must handle:
-//!   • playlist.tracks  → playlist.items  (field rename)
-//!   • GET /playlists/{id}/items only works for playlists you own/collaborate on
-//!   • GET /me/following still works, but followers/popularity stripped
-//!   • Batch fetch endpoints removed (GET /tracks, /artists, /albums)
-//!   • GET /me/saved/tracks still available via GET /me/tracks
+//! Spotify data fetching via raw reqwest.
 
 use anyhow::{bail, Context, Result};
 use rspotify::{prelude::*, AuthCodePkceSpotify};
 use serde::Deserialize;
-use tracing::info;
+use tokio::time::{sleep, Duration};
+use tracing::{info, warn};
 
 const BASE: &str = "https://api.spotify.com/v1";
 const PAGE: u32 = 50;
+const MAX_RETRIES: u32 = 4;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public summary types
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Public Types
+// ─────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct UserProfile {
@@ -34,7 +25,7 @@ pub struct PlaylistSummary {
     pub id: String,
     pub name: String,
     pub track_count: u32,
-    pub owner: bool, // true = user owns/collaborates → tracks fetchable
+    pub owner: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -52,46 +43,49 @@ pub struct ArtistSummary {
     pub name: String,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal raw JSON shapes (post Feb-2026 field names)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Raw JSON Shapes
+// ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct Page<T> {
     items: Vec<T>,
     next: Option<String>,
-    total: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
+struct PlaylistPage {
+    items: Vec<RawPlaylist>,
+    next: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
 struct RawPlaylist {
     id: String,
     name: String,
-    // Feb-2026: field renamed from "tracks" to "items"
-    // We try both so the code works if rspotify ever updates too.
-    items: Option<RawPlaylistItemsMeta>,
-    tracks: Option<RawPlaylistItemsMeta>, // legacy fallback
+    #[serde(rename = "items")]
+    track_meta_new: Option<RawTrackMeta>,
+    tracks: Option<RawTrackMeta>,
     owner: Option<RawOwner>,
 }
 
-#[derive(Deserialize)]
-struct RawPlaylistItemsMeta {
+#[derive(Deserialize, Debug)]
+struct RawTrackMeta {
     total: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct RawOwner {
     id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct RawPlaylistItem {
-    // Feb-2026: field renamed from "track" to "item"
     item: Option<RawTrack>,
-    track: Option<RawTrack>, // legacy fallback
+    track: Option<RawTrack>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 struct RawTrack {
     id: Option<String>,
     name: String,
@@ -100,88 +94,101 @@ struct RawTrack {
     album: Option<RawAlbum>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 struct RawArtist {
-    id: Option<String>,
     name: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 struct RawAlbum {
     name: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct RawSavedTrack {
     track: RawTrack,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct RawArtistObj {
     id: String,
     name: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct RawCursors {
     after: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct RawCursorPage {
     items: Vec<RawArtistObj>,
     cursors: Option<RawCursors>,
-    next: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct RawArtistAlbum {
+#[derive(Deserialize, Debug)]
+struct RawAlbumObj {
     name: String,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: get a valid access token string from rspotify
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Token Helper
+// ─────────────────────────────────────────────────────────────
 
 async fn token(spotify: &AuthCodePkceSpotify) -> Result<String> {
-    // Trigger a refresh if needed
     spotify.auto_reauth().await.ok();
-
     let guard = spotify.token.lock().await.unwrap();
     let tok = guard.as_ref().context("No token available")?;
     Ok(tok.access_token.clone())
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: authenticated GET returning parsed JSON
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// HTTP GET with retry
+// ─────────────────────────────────────────────────────────────
 
 async fn get<T: for<'de> Deserialize<'de>>(
     client: &reqwest::Client,
     url: &str,
     access_token: &str,
 ) -> Result<T> {
-    let resp = client
-        .get(url)
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
+    let mut attempt = 0u32;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        bail!("GET {url} → {status}: {body}");
+    loop {
+        let resp = client.get(url).bearer_auth(access_token).send().await?;
+
+        let status = resp.status();
+
+        if status.as_u16() == 429 {
+            attempt += 1;
+            if attempt > MAX_RETRIES {
+                bail!("429 after retries");
+            }
+
+            let retry_after = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+
+            warn!("Rate limited. Waiting {retry_after}s");
+            sleep(Duration::from_secs(retry_after + 1)).await;
+            continue;
+        }
+
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            bail!("HTTP {status}: {body}");
+        }
+
+        let body = resp.text().await?;
+        return Ok(serde_json::from_str(&body)?);
     }
-
-    resp.json::<T>()
-        .await
-        .with_context(|| format!("Parsing response from {url}"))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// User profile
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Fetch User
+// ─────────────────────────────────────────────────────────────
 
 pub async fn fetch_user(spotify: &AuthCodePkceSpotify) -> Result<UserProfile> {
     #[derive(Deserialize)]
@@ -200,9 +207,9 @@ pub async fn fetch_user(spotify: &AuthCodePkceSpotify) -> Result<UserProfile> {
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Playlists  — GET /me/playlists
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Fetch Playlists
+// ─────────────────────────────────────────────────────────────
 
 pub async fn fetch_playlists(
     spotify: &AuthCodePkceSpotify,
@@ -210,17 +217,17 @@ pub async fn fetch_playlists(
 ) -> Result<Vec<PlaylistSummary>> {
     let tok = token(spotify).await?;
     let client = reqwest::Client::new();
+
     let mut results = Vec::new();
-    let mut offset = 0u32;
+    let mut offset = 0;
 
     loop {
         let url = format!("{BASE}/me/playlists?limit={PAGE}&offset={offset}");
-        let page: Page<RawPlaylist> = get(&client, &url, &tok).await?;
+        let page: PlaylistPage = get(&client, &url, &tok).await?;
 
         for pl in &page.items {
-            // Feb-2026: "items" field; fall back to "tracks" if absent
             let total = pl
-                .items
+                .track_meta_new
                 .as_ref()
                 .or(pl.tracks.as_ref())
                 .map(|m| m.total)
@@ -237,19 +244,18 @@ pub async fn fetch_playlists(
         }
 
         offset += page.items.len() as u32;
+
         if page.next.is_none() || page.items.is_empty() {
             break;
         }
     }
 
-    info!("Fetched {} playlists", results.len());
     Ok(results)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Playlist tracks  — GET /playlists/{id}/items
-// Only works for playlists the user owns/collaborates on (Feb-2026 restriction)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// FIXED: Fetch Playlist Tracks
+// ─────────────────────────────────────────────────────────────
 
 pub async fn fetch_playlist_tracks(
     spotify: &AuthCodePkceSpotify,
@@ -257,27 +263,19 @@ pub async fn fetch_playlist_tracks(
 ) -> Result<Vec<TrackSummary>> {
     let tok = token(spotify).await?;
     let client = reqwest::Client::new();
+
     let mut results = Vec::new();
-    let mut offset = 0u32;
+    let mut offset = 0;
 
     loop {
-        // Feb-2026: endpoint renamed from /tracks to /items
         let url = format!("{BASE}/playlists/{playlist_id}/items?limit={PAGE}&offset={offset}");
+        let page: Page<RawPlaylistItem> = get(&client, &url, &tok).await?;
 
-        let page: Page<RawPlaylistItem> = match get(&client, &url, &tok).await {
-            Ok(p) => p,
-            Err(e) => {
-                // 403 = user doesn't own this playlist → return empty gracefully
-                if e.to_string().contains("403") {
-                    info!("Playlist {playlist_id}: 403 (not owner), skipping tracks");
-                    return Ok(vec![]);
-                }
-                return Err(e);
-            }
-        };
+        if page.items.is_empty() {
+            break;
+        }
 
         for item in &page.items {
-            // Feb-2026: field renamed "track" → "item"; try both
             let track = item.item.as_ref().or(item.track.as_ref());
             if let Some(t) = track {
                 results.push(raw_track_to_summary(t));
@@ -285,64 +283,65 @@ pub async fn fetch_playlist_tracks(
         }
 
         offset += page.items.len() as u32;
-        if page.next.is_none() || page.items.is_empty() {
+
+        if page.next.is_none() {
             break;
         }
     }
 
-    info!(
-        "Fetched {} tracks for playlist {}",
-        results.len(),
-        playlist_id
-    );
     Ok(results)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Liked / saved tracks  — GET /me/tracks
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Fetch Liked
+// ─────────────────────────────────────────────────────────────
 
 pub async fn fetch_liked_tracks(spotify: &AuthCodePkceSpotify) -> Result<Vec<TrackSummary>> {
     let tok = token(spotify).await?;
     let client = reqwest::Client::new();
+
     let mut results = Vec::new();
-    let mut offset = 0u32;
+    let mut offset = 0;
 
     loop {
         let url = format!("{BASE}/me/tracks?limit={PAGE}&offset={offset}");
         let page: Page<RawSavedTrack> = get(&client, &url, &tok).await?;
+
+        if page.items.is_empty() {
+            break;
+        }
 
         for saved in &page.items {
             results.push(raw_track_to_summary(&saved.track));
         }
 
         offset += page.items.len() as u32;
-        if page.next.is_none() || page.items.is_empty() {
+
+        if page.next.is_none() {
             break;
         }
     }
 
-    info!("Fetched {} liked tracks", results.len());
     Ok(results)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Followed artists  — GET /me/following?type=artist  (cursor-based)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Fetch Followed Artists
+// ─────────────────────────────────────────────────────────────
 
 pub async fn fetch_followed_artists(spotify: &AuthCodePkceSpotify) -> Result<Vec<ArtistSummary>> {
     let tok = token(spotify).await?;
     let client = reqwest::Client::new();
+
     let mut results = Vec::new();
     let mut after: Option<String> = None;
 
     loop {
         let url = match &after {
-            Some(cursor) => format!("{BASE}/me/following?type=artist&limit={PAGE}&after={cursor}"),
+            Some(c) => format!("{BASE}/me/following?type=artist&limit={PAGE}&after={c}"),
             None => format!("{BASE}/me/following?type=artist&limit={PAGE}"),
         };
 
-        // Response shape: { "artists": { "items": [...], "cursors": {...}, "next": ... } }
         #[derive(Deserialize)]
         struct Wrapper {
             artists: RawCursorPage,
@@ -362,41 +361,9 @@ pub async fn fetch_followed_artists(spotify: &AuthCodePkceSpotify) -> Result<Vec
             });
         }
 
-        match page.cursors.and_then(|c| c.after) {
-            Some(cursor) => after = Some(cursor),
-            None => break,
-        }
-    }
+        after = page.cursors.and_then(|c| c.after);
 
-    info!("Fetched {} followed artists", results.len());
-    Ok(results)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Artist albums  — GET /artists/{id}/albums
-// ─────────────────────────────────────────────────────────────────────────────
-
-pub async fn fetch_artist_albums(
-    spotify: &AuthCodePkceSpotify,
-    artist_id: &str,
-) -> Result<Vec<String>> {
-    let tok = token(spotify).await?;
-    let client = reqwest::Client::new();
-    let mut results = Vec::new();
-    let mut offset = 0u32;
-
-    loop {
-        let url = format!(
-            "{BASE}/artists/{artist_id}/albums?limit={PAGE}&offset={offset}&include_groups=album,single"
-        );
-        let page: Page<RawArtistAlbum> = get(&client, &url, &tok).await?;
-
-        for album in &page.items {
-            results.push(album.name.clone());
-        }
-
-        offset += page.items.len() as u32;
-        if page.next.is_none() || page.items.is_empty() {
+        if after.is_none() {
             break;
         }
     }
@@ -404,9 +371,48 @@ pub async fn fetch_artist_albums(
     Ok(results)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Fetch Artist Albums
+// ─────────────────────────────────────────────────────────────
+
+pub async fn fetch_artist_albums(
+    spotify: &AuthCodePkceSpotify,
+    artist_id: &str,
+) -> Result<Vec<String>> {
+    let tok = token(spotify).await?;
+    let client = reqwest::Client::new();
+
+    let mut results = Vec::new();
+    let mut offset = 0;
+
+    loop {
+        let url = format!(
+            "{BASE}/artists/{artist_id}/albums?limit={PAGE}&offset={offset}&include_groups=album,single"
+        );
+
+        let page: Page<RawAlbumObj> = get(&client, &url, &tok).await?;
+
+        if page.items.is_empty() {
+            break;
+        }
+
+        for album in &page.items {
+            results.push(album.name.clone());
+        }
+
+        offset += page.items.len() as u32;
+
+        if page.next.is_none() {
+            break;
+        }
+    }
+
+    Ok(results)
+}
+
+// ─────────────────────────────────────────────────────────────
 // Helper
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 
 fn raw_track_to_summary(t: &RawTrack) -> TrackSummary {
     TrackSummary {
