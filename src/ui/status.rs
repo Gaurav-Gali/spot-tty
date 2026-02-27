@@ -1,3 +1,4 @@
+use crate::app::state::{AppState, ExplorerNode, Focus};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -5,13 +6,11 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::state::{AppState, ExplorerNode, Focus};
-
 pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) {
     let count = state
         .pending_count
         .map(|c| c.to_string())
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
 
     let focus = match state.focus {
         Focus::Sidebar => "SIDEBAR",
@@ -19,10 +18,10 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) 
     };
 
     let breadcrumb = match state.explorer_stack.last() {
-        Some(ExplorerNode::PlaylistTracks(name)) => {
+        Some(ExplorerNode::PlaylistTracks(_, name)) => {
             format!("Library › Playlist › {}", name)
         }
-        Some(ExplorerNode::ArtistAlbums(name)) => {
+        Some(ExplorerNode::ArtistAlbums(_, name)) => {
             format!("Library › Artist › {}", name)
         }
         Some(ExplorerNode::LikedTracks) => "Library › Liked Songs".to_string(),
@@ -37,9 +36,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) 
         Span::raw(breadcrumb),
     ]);
 
-    let paragraph = Paragraph::new(line).block(
-        Block::default().borders(Borders::ALL), // full rectangle
-    );
+    let paragraph = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
 
     frame.render_widget(paragraph, area);
 }

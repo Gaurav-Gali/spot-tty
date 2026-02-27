@@ -1,3 +1,4 @@
+use crate::app::state::{AppState, ExplorerNode};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -6,18 +7,15 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::state::{AppState, ExplorerNode};
-
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // ─────────────────────────────────────────────
-    // Title
+    // Title / breadcrumb
     // ─────────────────────────────────────────────
-
     let breadcrumb = match state.explorer_stack.last() {
-        Some(ExplorerNode::PlaylistTracks(name)) => {
+        Some(ExplorerNode::PlaylistTracks(_, name)) => {
             format!("Library › Playlist › {}", name)
         }
-        Some(ExplorerNode::ArtistAlbums(name)) => {
+        Some(ExplorerNode::ArtistAlbums(_, name)) => {
             format!("Library › Artist › {}", name)
         }
         Some(ExplorerNode::LikedTracks) => "Library › Liked Songs".to_string(),
@@ -25,7 +23,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let current_track = "Track Name";
-
     let title = Line::from(vec![
         Span::raw(breadcrumb),
         Span::raw(" › "),
@@ -38,15 +35,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     ]);
 
     let block = Block::default().borders(Borders::ALL).title(title);
-
     frame.render_widget(block.clone(), area);
-
     let inner = block.inner(area);
 
     // ─────────────────────────────────────────────
     // Padding
     // ─────────────────────────────────────────────
-
     let padded = Rect {
         x: inner.x + 2,
         y: inner.y,
@@ -54,7 +48,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         height: inner.height,
     };
 
-    // Layout: playhead | sweep | gap | visualizer
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -70,21 +63,18 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let visualizer_area = layout[3];
 
     // ─────────────────────────────────────────────
-    // Base Sweep Background
+    // Progress bar background
     // ─────────────────────────────────────────────
-
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(20, 35, 20))),
         sweep_area,
     );
 
     // ─────────────────────────────────────────────
-    // Filled Sweep
+    // Filled progress
     // ─────────────────────────────────────────────
-
     let progress = state.playback_progress.clamp(0.0, 1.0);
     let fill_width = (sweep_area.width as f64 * progress) as u16;
-
     if fill_width > 0 {
         let progress_rect = Rect {
             x: sweep_area.x,
@@ -92,7 +82,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
             width: fill_width,
             height: sweep_area.height,
         };
-
         frame.render_widget(
             Block::default().style(Style::default().bg(Color::Green)),
             progress_rect,
@@ -100,26 +89,22 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     // ─────────────────────────────────────────────
-    // Playhead Text
+    // Playhead text
     // ─────────────────────────────────────────────
-
     frame.render_widget(
         Paragraph::new("▶ 1:23 / 3:45").style(Style::default().fg(Color::White)),
         playhead_area,
     );
 
     // ─────────────────────────────────────────────
-    // Animated Visualizer
+    // Animated visualizer
     // ─────────────────────────────────────────────
-
     let bars = ["▂", "▅", "▇", "▆", "▃", "▂", "▇", "▅", "▃", "▂"];
-
     let mut visual = String::new();
     for i in 0..10 {
         let index = (state.visualizer_phase + i) % bars.len();
         visual.push_str(bars[index]);
     }
-
     frame.render_widget(
         Paragraph::new(visual).style(Style::default().fg(Color::Green)),
         visualizer_area,

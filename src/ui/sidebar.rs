@@ -1,4 +1,4 @@
-use crate::app::state::{AppState, Focus};
+use crate::app::state::{AppState, AppStatus, Focus};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -6,15 +6,10 @@ use ratatui::{
     Frame,
 };
 
-const PLAYLISTS: &[&str] = &["Workout Mix", "Chill Vibes", "Focus Mode"];
-const LIKED: &[&str] = &["Liked Songs"];
-const ARTISTS: &[&str] = &["Daft Punk", "Radiohead", "Arctic Monkeys"];
-
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // Highlight styles
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Active panel: bright, bold, coloured background
 fn active_highlight() -> Style {
     Style::default()
         .bg(Color::Rgb(60, 65, 80))
@@ -22,7 +17,6 @@ fn active_highlight() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Inactive panel: very muted — dim text, near-invisible background
 fn inactive_highlight() -> Style {
     Style::default()
         .bg(Color::Rgb(35, 35, 40))
@@ -30,19 +24,26 @@ fn inactive_highlight() -> Style {
         .add_modifier(Modifier::DIM)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
 pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) {
-    // ── Outer vertical split: user box at top, library sections below ──
+    // Outer split: user box (fixed) + library sections (remaining)
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // user name box
-            Constraint::Min(0),    // library sections
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
     render_user_box(frame, outer[0], state);
 
-    // ── Three library sections fill the remaining space ──
+    // If still loading, show a single spinner box instead of empty lists
+    if state.status == AppStatus::Loading {
+        render_loading(frame, outer[1]);
+        return;
+    }
+
+    // The three library sections share the remaining height
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -52,22 +53,50 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) 
         ])
         .split(outer[1]);
 
-    render_section(frame, sections[0], " Playlists ", PLAYLISTS, state, 0);
-    render_section(frame, sections[1], " Liked ", LIKED, state, PLAYLISTS.len());
+    let pl_len = state.playlists.len();
+
+    render_section(
+        frame,
+        sections[0],
+        " Playlists ",
+        &state
+            .playlists
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        state,
+        0,
+    );
+
+    render_section(
+        frame,
+        sections[1],
+        " Liked Songs ",
+        &["Liked Songs"],
+        state,
+        pl_len,
+    );
+
     render_section(
         frame,
         sections[2],
         " Artists ",
-        ARTISTS,
+        &state
+            .artists
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>(),
         state,
-        PLAYLISTS.len() + LIKED.len(),
+        pl_len + 1,
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-widgets
+// ─────────────────────────────────────────────────────────────────────────────
+
 fn render_user_box(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) {
-    // In future this will come from AppState once the Spotify service is wired up.
-    // For now we read a placeholder; swap `state.user_name.as_deref()` in later.
-    let name = state.user_name.as_deref().unwrap_or("─────────────");
+    let name = state.user_name.as_deref().unwrap_or("Connecting…");
 
     let paragraph = Paragraph::new(format!(" {}", name))
         .style(Style::default().fg(Color::Rgb(205, 214, 244)))
@@ -81,6 +110,13 @@ fn render_user_box(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppSt
     frame.render_widget(paragraph, area);
 }
 
+fn render_loading(frame: &mut Frame, area: ratatui::layout::Rect) {
+    let paragraph = Paragraph::new(" Loading library…")
+        .style(Style::default().fg(Color::Rgb(120, 120, 130)))
+        .block(Block::default().borders(Borders::ALL));
+    frame.render_widget(paragraph, area);
+}
+
 fn render_section(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -89,8 +125,8 @@ fn render_section(
     state: &AppState,
     offset: usize,
 ) {
-    let is_sidebar_active = state.focus == Focus::Sidebar;
-    let highlight = if is_sidebar_active {
+    let is_active = state.focus == Focus::Sidebar;
+    let highlight = if is_active {
         active_highlight()
     } else {
         inactive_highlight()

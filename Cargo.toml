@@ -14,21 +14,36 @@ crossterm = "0.27"
 ratatui = "0.26"
 
 # Spotify API
-rspotify = { version = "0.12", features = ["client-reqwest", "reqwest-rustls-tls"] }
+rspotify = { version = "0.12", features = [
+  "client-reqwest",
+  "reqwest-rustls-tls",
+] }
+
+# Async stream utilities (needed for rspotify's paginated streams)
+futures = "0.3"
 
 # Caching
 moka = { version = "0.12", features = ["future"] }
 
-# SQLite (persistent cache)
+# SQLite (persistent cache — for later)
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# .env file loading
+dotenvy = "0.15"
+
+# Open URLs in the default browser
+open = "5"
+
+# Platform config/data directories (~/.config/spot-tty)
+dirs = "5"
+
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = "1"
