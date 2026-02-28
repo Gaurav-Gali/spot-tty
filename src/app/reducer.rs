@@ -6,14 +6,13 @@ use super::{
 pub fn reduce(state: &mut AppState, event: AppEvent) {
     match event {
         AppEvent::Quit => state.should_quit = true,
-
         AppEvent::UserLoaded(name) => {
             state.user_name = Some(name);
             state.loaded_user = true;
             check_ready(state);
         }
-        AppEvent::PlaylistsLoaded(playlists) => {
-            state.playlists = playlists;
+        AppEvent::PlaylistsLoaded(pl) => {
+            state.playlists = pl;
             state.loaded_playlists = true;
             update_sidebar_selection(state);
             check_ready(state);
@@ -21,7 +20,7 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
         AppEvent::LikedTracksLoaded(tracks) => {
             state.liked_tracks = tracks;
             state.loaded_liked = true;
-            if let Some(ExplorerNode::LikedTracks) = state.explorer_stack.last() {
+            if matches!(state.explorer_stack.last(), Some(ExplorerNode::LikedTracks)) {
                 state.explorer_items = state.liked_tracks.clone();
                 state.explorer_fetch_pending = false;
             }
@@ -32,14 +31,18 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             state.explorer_selected_index = 0;
             state.explorer_fetch_pending = false;
         }
+        AppEvent::CoverLoaded(url, small, large) => {
+            state.cover_cache_small.insert(url.clone(), small);
+            state.cover_cache_large.insert(url, large);
+        }
         AppEvent::LoadError(msg) => {
-            tracing::error!("Load error: {}", msg);
+            tracing::error!("{msg}");
             state.error_message = Some(msg);
             check_ready(state);
         }
 
-        AppEvent::MoveDown(count) => move_cursor(state, count as isize),
-        AppEvent::MoveUp(count) => move_cursor(state, -(count as isize)),
+        AppEvent::MoveDown(n) => move_cursor(state, n as isize),
+        AppEvent::MoveUp(n) => move_cursor(state, -(n as isize)),
         AppEvent::GoTop => set_cursor(state, 0),
         AppEvent::GoBottom => {
             let m = max_index(state);
@@ -55,7 +58,6 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
         AppEvent::Back => {
             state.focus = Focus::Sidebar;
         }
-
         AppEvent::JumpToPlaylists => {
             state.navigation.selected_index = 0;
             update_sidebar_selection(state);
@@ -73,17 +75,16 @@ fn move_cursor(state: &mut AppState, delta: isize) {
     let max = max_index(state) as isize;
     match state.focus {
         Focus::Sidebar => {
-            let idx = (state.navigation.selected_index as isize + delta).clamp(0, max);
-            state.navigation.selected_index = idx as usize;
+            let i = (state.navigation.selected_index as isize + delta).clamp(0, max) as usize;
+            state.navigation.selected_index = i;
             update_sidebar_selection(state);
         }
         Focus::Explorer => {
-            let idx = (state.explorer_selected_index as isize + delta).clamp(0, max);
-            state.explorer_selected_index = idx as usize;
+            let i = (state.explorer_selected_index as isize + delta).clamp(0, max) as usize;
+            state.explorer_selected_index = i;
         }
     }
 }
-
 fn set_cursor(state: &mut AppState, idx: usize) {
     match state.focus {
         Focus::Sidebar => {
@@ -95,56 +96,46 @@ fn set_cursor(state: &mut AppState, idx: usize) {
         }
     }
 }
-
 fn max_index(state: &AppState) -> usize {
     match state.focus {
-        // playlists + 1 liked row, minus 1 for 0-based
         Focus::Sidebar => (state.playlists.len() + 1).saturating_sub(1),
         Focus::Explorer => state.explorer_items.len().saturating_sub(1),
     }
 }
-
 fn update_sidebar_selection(state: &mut AppState) {
     let idx = state.navigation.selected_index;
     let pl_len = state.playlists.len();
-
     let new_node = if idx < pl_len {
         let pl = &state.playlists[idx];
         ExplorerNode::PlaylistTracks(pl.id.clone(), pl.name.clone(), pl.owner)
     } else {
         ExplorerNode::LikedTracks
     };
-
-    let node_changed = match state.explorer_stack.last() {
+    let changed = match state.explorer_stack.last() {
         None => true,
-        Some(current) => !nodes_equal(current, &new_node),
+        Some(n) => !nodes_equal(n, &new_node),
     };
-
     state.explorer_stack.clear();
     state.explorer_stack.push(new_node);
     state.explorer_selected_index = 0;
-
-    if node_changed {
+    if changed {
         state.explorer_items.clear();
         state.explorer_fetch_pending = true;
-
         if matches!(state.explorer_stack.last(), Some(ExplorerNode::LikedTracks)) {
             state.explorer_items = state.liked_tracks.clone();
             state.explorer_fetch_pending = false;
         }
     }
 }
-
 fn nodes_equal(a: &ExplorerNode, b: &ExplorerNode) -> bool {
     match (a, b) {
-        (ExplorerNode::PlaylistTracks(id1, _, _), ExplorerNode::PlaylistTracks(id2, _, _)) => {
+        (ExplorerNode::PlaylistTracks(id1, ..), ExplorerNode::PlaylistTracks(id2, ..)) => {
             id1 == id2
         }
         (ExplorerNode::LikedTracks, ExplorerNode::LikedTracks) => true,
         _ => false,
     }
 }
-
 fn check_ready(state: &mut AppState) {
     if state.status == AppStatus::Loading
         && state.loaded_user

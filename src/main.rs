@@ -5,8 +5,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use rspotify::AuthCodePkceSpotify;
-use std::io;
-use std::time::Instant;
+use std::{collections::HashSet, io, time::Instant};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
@@ -25,16 +24,22 @@ use app::{
 use config::settings::Settings;
 use services::{auth, spotify as svc};
 
+// Cover sizes must match ui/sidebar.rs and ui/explorer.rs constants
+const SMALL_W: u16 = 8; // sidebar playlist rows
+const SMALL_H: u16 = 4;
+const LARGE_W: u16 = 16; // explorer detail panel
+const LARGE_H: u16 = 8;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let log_file = std::fs::File::create("/tmp/spot-tty.log")?;
+    let log = std::fs::File::create("/tmp/spot-tty.log")?;
     tracing_subscriber::fmt()
-        .with_writer(log_file)
+        .with_writer(log)
         .with_ansi(false)
         .init();
 
     let settings = Settings::load()?;
-    let spotify: AuthCodePkceSpotify = auth::authenticate(
+    let spotify = auth::authenticate(
         &settings.client_id,
         &settings.client_secret,
         &settings.redirect_uri,
@@ -44,8 +49,7 @@ async fn main() -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut app = App::new();
@@ -53,8 +57,8 @@ async fn main() -> anyhow::Result<()> {
 
     let tick_rate = Duration::from_millis(80);
     let mut last_tick = Instant::now();
-    let mut last_fetched_stack: Option<ExplorerNode> = None;
-    let mut explorer_fetch_in_progress = false;
+    let mut last_node: Option<ExplorerNode> = None;
+    let mut fetch_in_progress = false;
 
     loop {
         if last_tick.elapsed() >= tick_rate {
@@ -66,31 +70,45 @@ async fn main() -> anyhow::Result<()> {
             app.state.visualizer_phase = (app.state.visualizer_phase + 1) % 1000;
         }
 
-        terminal.draw(|frame| {
-            let areas = ui::layout::split(frame.size());
-            ui::sidebar::render(frame, areas.sidebar, &app.state);
-            ui::explorer::render(frame, areas.main, &app.state);
-            ui::player::render(frame, areas.control, &app.state);
+        terminal.draw(|f| {
+            let areas = ui::layout::split(f.size());
+            ui::sidebar::render(f, areas.sidebar, &app.state);
+            ui::explorer::render(f, areas.main, &app.state);
+            ui::player::render(f, areas.control, &app.state);
         })?;
 
-        while let Ok(event) = rx.try_recv() {
-            match &event {
-                AppEvent::ExplorerTracksLoaded(_) | AppEvent::LoadError(_) => {
-                    explorer_fetch_in_progress = false;
+        while let Ok(ev) = rx.try_recv() {
+            match &ev {
+                AppEvent::ExplorerTracksLoaded(tracks) => {
+                    fetch_in_progress = false;
+                    spawn_cover_fetches(urls_from_tracks(tracks), tx.clone());
+                }
+                AppEvent::LikedTracksLoaded(tracks) => {
+                    spawn_cover_fetches(urls_from_tracks(tracks), tx.clone());
+                }
+                AppEvent::PlaylistsLoaded(playlists) => {
+                    let urls: Vec<String> = playlists
+                        .iter()
+                        .filter_map(|p| p.image_url.clone())
+                        .collect();
+                    spawn_cover_fetches(urls, tx.clone());
+                }
+                AppEvent::LoadError(_) => {
+                    fetch_in_progress = false;
                 }
                 _ => {}
             }
-            app.handle_event(event);
+            app.handle_event(ev);
         }
 
-        if app.state.explorer_fetch_pending && !explorer_fetch_in_progress {
-            last_fetched_stack = None;
+        if app.state.explorer_fetch_pending && !fetch_in_progress {
+            last_node = None;
         }
 
         maybe_fetch_explorer(
             &app.state.explorer_stack.last().cloned(),
-            &mut last_fetched_stack,
-            &mut explorer_fetch_in_progress,
+            &mut last_node,
+            &mut fetch_in_progress,
             spotify.clone(),
             tx.clone(),
         );
@@ -99,9 +117,9 @@ async fn main() -> anyhow::Result<()> {
             if let Event::Key(key) = event::read()? {
                 if let KeyCode::Char(c) = key.code {
                     if c.is_ascii_digit() {
-                        let digit = c.to_digit(10).unwrap() as usize;
-                        let cur = app.state.pending_count.unwrap_or(0);
-                        app.state.pending_count = Some(cur * 10 + digit);
+                        let d = c.to_digit(10).unwrap() as usize;
+                        app.state.pending_count =
+                            Some(app.state.pending_count.unwrap_or(0) * 10 + d);
                         continue;
                     }
                 }
@@ -146,27 +164,33 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn urls_from_tracks(tracks: &[crate::services::spotify::TrackSummary]) -> Vec<String> {
+    tracks
+        .iter()
+        .filter_map(|t| t.album_image_url.clone())
+        .collect()
+}
+
 fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender<AppEvent>) {
     {
         let (sp, tx) = (spotify.clone(), tx.clone());
         tokio::spawn(async move {
             match svc::fetch_user(&sp).await {
                 Ok(user) => {
-                    let user_id = user.id.clone();
+                    let uid = user.id.clone();
                     let _ = tx.send(AppEvent::UserLoaded(user.display_name));
-                    match svc::fetch_playlists(&sp, &user_id).await {
+                    match svc::fetch_playlists(&sp, &uid).await {
                         Ok(pl) => {
                             let _ = tx.send(AppEvent::PlaylistsLoaded(pl));
                         }
                         Err(e) => {
-                            tracing::error!("fetch_playlists: {e:#}");
+                            tracing::error!("playlists: {e:#}");
                             let _ = tx.send(AppEvent::PlaylistsLoaded(vec![]));
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::error!("fetch_user: {e:#}");
-                    let _ = tx.send(AppEvent::LoadError(format!("Profile: {e}")));
+                    tracing::error!("user: {e:#}");
                     let _ = tx.send(AppEvent::PlaylistsLoaded(vec![]));
                 }
             }
@@ -181,7 +205,7 @@ fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender
                     let _ = tx.send(AppEvent::LikedTracksLoaded(t));
                 }
                 Err(e) => {
-                    tracing::error!("fetch_liked_tracks: {e:#}");
+                    tracing::error!("liked: {e:#}");
                     let _ = tx.send(AppEvent::LikedTracksLoaded(vec![]));
                 }
             }
@@ -189,30 +213,42 @@ fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender
     }
 }
 
+fn spawn_cover_fetches(urls: Vec<String>, tx: mpsc::UnboundedSender<AppEvent>) {
+    let mut seen: HashSet<String> = HashSet::new();
+    for url in urls {
+        if seen.insert(url.clone()) {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if let Some((small, large)) =
+                    ui::cover::fetch_cover_dual(&url, SMALL_W, SMALL_H, LARGE_W, LARGE_H).await
+                {
+                    let _ = tx.send(AppEvent::CoverLoaded(url, small, large));
+                }
+            });
+        }
+    }
+}
+
 fn maybe_fetch_explorer(
     current: &Option<ExplorerNode>,
     last: &mut Option<ExplorerNode>,
-    in_progress: &mut bool,
+    in_prog: &mut bool,
     spotify: AuthCodePkceSpotify,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
-    if *in_progress {
+    if *in_prog {
         return;
     }
-
-    let should_fetch = match (current, last.as_ref()) {
+    let should = match (current, last.as_ref()) {
         (None, _) => false,
-        (Some(curr), None) => !matches!(curr, ExplorerNode::LikedTracks),
-        (Some(curr), Some(prev)) => !nodes_equal(curr, prev),
+        (Some(c), None) => !matches!(c, ExplorerNode::LikedTracks),
+        (Some(c), Some(p)) => !nodes_equal(c, p),
     };
-
-    if !should_fetch {
+    if !should {
         return;
     }
-
     *last = current.clone();
-    *in_progress = true;
-
+    *in_prog = true;
     match current {
         Some(ExplorerNode::PlaylistTracks(id, _, _)) => {
             let id = id.clone();
@@ -222,21 +258,21 @@ fn maybe_fetch_explorer(
                         let _ = tx.send(AppEvent::ExplorerTracksLoaded(t));
                     }
                     Err(e) => {
-                        tracing::error!("fetch_playlist_tracks: {e:#}");
+                        tracing::error!("tracks: {e:#}");
                         let _ = tx.send(AppEvent::ExplorerTracksLoaded(vec![]));
                     }
                 }
             });
         }
         _ => {
-            *in_progress = false;
+            *in_prog = false;
         }
     }
 }
 
 fn nodes_equal(a: &ExplorerNode, b: &ExplorerNode) -> bool {
     match (a, b) {
-        (ExplorerNode::PlaylistTracks(id1, _, _), ExplorerNode::PlaylistTracks(id2, _, _)) => {
+        (ExplorerNode::PlaylistTracks(id1, ..), ExplorerNode::PlaylistTracks(id2, ..)) => {
             id1 == id2
         }
         (ExplorerNode::LikedTracks, ExplorerNode::LikedTracks) => true,

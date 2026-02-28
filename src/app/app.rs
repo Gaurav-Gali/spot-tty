@@ -1,6 +1,7 @@
 use super::events::AppEvent;
 use super::reducer::reduce;
 use super::state::{AppState, AppStatus, Focus, KeyMode, NavigationState};
+use std::collections::HashMap;
 
 pub struct App {
     pub state: AppState,
@@ -20,6 +21,8 @@ impl App {
                 playlists: vec![],
                 liked_tracks: vec![],
                 explorer_items: vec![],
+                cover_cache_small: HashMap::new(),
+                cover_cache_large: HashMap::new(),
                 navigation: NavigationState { selected_index: 0 },
                 explorer_stack: vec![],
                 explorer_selected_index: 0,
@@ -32,7 +35,6 @@ impl App {
             },
         }
     }
-
     pub fn handle_event(&mut self, event: AppEvent) {
         reduce(&mut self.state, event);
     }

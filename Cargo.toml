@@ -51,3 +51,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Error handling
 anyhow = "1"
 thiserror = "1"
+
+# Image decoding for cover art (block-pixel rendering)
+image = { version = "0.25", default-features = false, features = [
+  "jpeg",
+  "png",
+] }

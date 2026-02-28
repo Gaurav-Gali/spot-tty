@@ -1,9 +1,10 @@
 use crate::services::spotify::{PlaylistSummary, TrackSummary};
+use crate::ui::cover::CoverArt;
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub enum ExplorerNode {
-    /// (playlist_id, display_name, is_owner)
-    PlaylistTracks(String, String, bool),
+    PlaylistTracks(String, String, bool), // id, name, is_owner
     LikedTracks,
 }
 
@@ -43,6 +44,11 @@ pub struct AppState {
     pub playlists: Vec<PlaylistSummary>,
     pub liked_tracks: Vec<TrackSummary>,
     pub explorer_items: Vec<TrackSummary>,
+
+    /// Small covers: keyed by image_url → sidebar-sized art (8×4 cells)
+    pub cover_cache_small: HashMap<String, CoverArt>,
+    /// Large covers: keyed by image_url → detail panel art (16×16 cells)
+    pub cover_cache_large: HashMap<String, CoverArt>,
 
     pub navigation: NavigationState,
     pub explorer_stack: Vec<ExplorerNode>,
