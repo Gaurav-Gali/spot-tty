@@ -24,12 +24,6 @@ use app::{
 use config::settings::Settings;
 use services::{auth, spotify as svc};
 
-// Cover sizes must match ui/sidebar.rs and ui/explorer.rs constants
-const SMALL_W: u16 = 8; // sidebar playlist rows
-const SMALL_H: u16 = 4;
-const LARGE_W: u16 = 16; // explorer detail panel
-const LARGE_H: u16 = 8;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let log = std::fs::File::create("/tmp/spot-tty.log")?;
@@ -55,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let mut app = App::new();
     spawn_initial_fetches(spotify.clone(), tx.clone());
 
-    let tick_rate = Duration::from_millis(80);
+    let tick_rate = Duration::from_millis(150);
     let mut last_tick = Instant::now();
     let mut last_node: Option<ExplorerNode> = None;
     let mut fetch_in_progress = false;
@@ -70,28 +64,47 @@ async fn main() -> anyhow::Result<()> {
             app.state.visualizer_phase = (app.state.visualizer_phase + 1) % 1000;
         }
 
+        app.state.render_cache.begin_frame();
+
+        let cache_ptr = &mut app.state.render_cache as *mut _;
         terminal.draw(|f| {
+            // SAFETY: render_cache is only accessed here; AppState is read-only during draw.
+            let cache = unsafe { &mut *cache_ptr };
             let areas = ui::layout::split(f.size());
-            ui::sidebar::render(f, areas.sidebar, &app.state);
-            ui::explorer::render(f, areas.main, &app.state);
+            ui::sidebar::render(f, areas.sidebar, &app.state, cache);
+            ui::explorer::render(f, areas.main, &app.state, cache);
             ui::player::render(f, areas.control, &app.state);
         })?;
+
+        // Flush all queued image escape sequences in one write
+        app.state.render_cache.flush();
 
         while let Ok(ev) = rx.try_recv() {
             match &ev {
                 AppEvent::ExplorerTracksLoaded(tracks) => {
                     fetch_in_progress = false;
-                    spawn_cover_fetches(urls_from_tracks(tracks), tx.clone());
+                    spawn_cover_fetches(
+                        tracks
+                            .iter()
+                            .filter_map(|t| t.album_image_url.clone())
+                            .collect(),
+                        tx.clone(),
+                    );
                 }
                 AppEvent::LikedTracksLoaded(tracks) => {
-                    spawn_cover_fetches(urls_from_tracks(tracks), tx.clone());
+                    spawn_cover_fetches(
+                        tracks
+                            .iter()
+                            .filter_map(|t| t.album_image_url.clone())
+                            .collect(),
+                        tx.clone(),
+                    );
                 }
-                AppEvent::PlaylistsLoaded(playlists) => {
-                    let urls: Vec<String> = playlists
-                        .iter()
-                        .filter_map(|p| p.image_url.clone())
-                        .collect();
-                    spawn_cover_fetches(urls, tx.clone());
+                AppEvent::PlaylistsLoaded(pl) => {
+                    spawn_cover_fetches(
+                        pl.iter().filter_map(|p| p.image_url.clone()).collect(),
+                        tx.clone(),
+                    );
                 }
                 AppEvent::LoadError(_) => {
                     fetch_in_progress = false;
@@ -104,7 +117,6 @@ async fn main() -> anyhow::Result<()> {
         if app.state.explorer_fetch_pending && !fetch_in_progress {
             last_node = None;
         }
-
         maybe_fetch_explorer(
             &app.state.explorer_stack.last().cloned(),
             &mut last_node,
@@ -152,7 +164,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-
         if app.state.should_quit {
             break;
         }
@@ -162,13 +173,6 @@ async fn main() -> anyhow::Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
-}
-
-fn urls_from_tracks(tracks: &[crate::services::spotify::TrackSummary]) -> Vec<String> {
-    tracks
-        .iter()
-        .filter_map(|t| t.album_image_url.clone())
-        .collect()
 }
 
 fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender<AppEvent>) {
@@ -219,10 +223,8 @@ fn spawn_cover_fetches(urls: Vec<String>, tx: mpsc::UnboundedSender<AppEvent>) {
         if seen.insert(url.clone()) {
             let tx = tx.clone();
             tokio::spawn(async move {
-                if let Some((small, large)) =
-                    ui::cover::fetch_cover_dual(&url, SMALL_W, SMALL_H, LARGE_W, LARGE_H).await
-                {
-                    let _ = tx.send(AppEvent::CoverLoaded(url, small, large));
+                if let Some(img) = ui::cover::fetch_cover(&url).await {
+                    let _ = tx.send(AppEvent::CoverLoaded(url, img));
                 }
             });
         }
@@ -240,7 +242,7 @@ fn maybe_fetch_explorer(
         return;
     }
     let should = match (current, last.as_ref()) {
-        (None, _) => false,
+        (None, _) | (Some(ExplorerNode::LikedTracks), None) => false,
         (Some(c), None) => !matches!(c, ExplorerNode::LikedTracks),
         (Some(c), Some(p)) => !nodes_equal(c, p),
     };
@@ -249,24 +251,21 @@ fn maybe_fetch_explorer(
     }
     *last = current.clone();
     *in_prog = true;
-    match current {
-        Some(ExplorerNode::PlaylistTracks(id, _, _)) => {
-            let id = id.clone();
-            tokio::spawn(async move {
-                match svc::fetch_playlist_tracks(&spotify, &id).await {
-                    Ok(t) => {
-                        let _ = tx.send(AppEvent::ExplorerTracksLoaded(t));
-                    }
-                    Err(e) => {
-                        tracing::error!("tracks: {e:#}");
-                        let _ = tx.send(AppEvent::ExplorerTracksLoaded(vec![]));
-                    }
+    if let Some(ExplorerNode::PlaylistTracks(id, _, _)) = current {
+        let id = id.clone();
+        tokio::spawn(async move {
+            match svc::fetch_playlist_tracks(&spotify, &id).await {
+                Ok(t) => {
+                    let _ = tx.send(AppEvent::ExplorerTracksLoaded(t));
                 }
-            });
-        }
-        _ => {
-            *in_prog = false;
-        }
+                Err(e) => {
+                    tracing::error!("tracks: {e:#}");
+                    let _ = tx.send(AppEvent::ExplorerTracksLoaded(vec![]));
+                }
+            }
+        });
+    } else {
+        *in_prog = false;
     }
 }
 

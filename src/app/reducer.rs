@@ -31,16 +31,14 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             state.explorer_selected_index = 0;
             state.explorer_fetch_pending = false;
         }
-        AppEvent::CoverLoaded(url, small, large) => {
-            state.cover_cache_small.insert(url.clone(), small);
-            state.cover_cache_large.insert(url, large);
+        AppEvent::CoverLoaded(url, img) => {
+            state.cover_cache.insert(url, img);
         }
         AppEvent::LoadError(msg) => {
             tracing::error!("{msg}");
             state.error_message = Some(msg);
             check_ready(state);
         }
-
         AppEvent::MoveDown(n) => move_cursor(state, n as isize),
         AppEvent::MoveUp(n) => move_cursor(state, -(n as isize)),
         AppEvent::GoTop => set_cursor(state, 0),

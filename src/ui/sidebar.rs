@@ -1,5 +1,5 @@
 use crate::app::state::{AppState, Focus};
-use crate::ui::cover::CoverArt;
+use crate::ui::cover::{render_placeholder, RenderCache};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -8,11 +8,10 @@ use ratatui::{
     Frame,
 };
 
-// Sidebar playlist row: 8 wide × 4 tall cells → 8×8 pixel cover
 const COVER_W: u16 = 8;
 const COVER_H: u16 = 4;
 
-pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn render(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut RenderCache) {
     let panes = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
@@ -36,11 +35,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         .constraints([Constraint::Min(0), Constraint::Length(3)])
         .split(panes[1]);
 
-    render_playlists(frame, library[0], state);
+    render_playlists(frame, library[0], state, cache);
     render_liked(frame, library[1], state);
 }
 
-fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState) {
+fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut RenderCache) {
     let is_active = state.focus == Focus::Sidebar;
 
     if !state.loaded_playlists {
@@ -68,48 +67,42 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState) {
     let sel = state.navigation.selected_index;
     let visible_rows = (inner.height / COVER_H) as usize;
     let scroll = sel.saturating_sub(visible_rows.saturating_sub(1));
+    let protocol = state.image_protocol;
 
-    for (slot, (i, pl)) in state
+    for (slot, pl) in state
         .playlists
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_rows)
-        .enumerate()
     {
         let row_y = inner.y + (slot as u16 * COVER_H);
         if row_y + COVER_H > inner.y + inner.height {
             break;
         }
 
-        let row = Rect {
-            x: inner.x,
-            y: row_y,
-            width: inner.width,
-            height: COVER_H,
-        };
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(COVER_W + 1), Constraint::Min(0)])
-            .split(row);
+            .split(Rect {
+                x: inner.x,
+                y: row_y,
+                width: inner.width,
+                height: COVER_H,
+            });
 
-        // ── Cover ──────────────────────────────────────────────────────────
         let cover_rect = Rect {
             x: cols[0].x,
             y: cols[0].y,
             width: COVER_W,
             height: COVER_H,
         };
-        match pl
-            .image_url
-            .as_ref()
-            .and_then(|u| state.cover_cache_small.get(u))
-        {
-            Some(art) => art.render(frame, cover_rect),
-            None => CoverArt::placeholder(COVER_W, COVER_H).render(frame, cover_rect),
+        match pl.image_url.as_ref().and_then(|u| state.cover_cache.get(u)) {
+            Some(img) => img.render(frame, cover_rect, protocol, cache),
+            None => render_placeholder(frame, cover_rect),
         }
 
-        // ── Text ───────────────────────────────────────────────────────────
+        let i = slot + scroll;
         let is_sel = i == sel;
         let rel = (i as isize - sel as isize).unsigned_abs();
         let bg = if is_sel && is_active {
@@ -117,7 +110,6 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState) {
         } else {
             Color::Reset
         };
-
         let name_s = if is_sel && is_active {
             Style::default()
                 .fg(Color::Rgb(245, 224, 220))
@@ -128,14 +120,13 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState) {
         };
         let dim = Style::default().fg(Color::Rgb(100, 100, 110)).bg(bg);
         let num = Style::default().fg(Color::Rgb(88, 91, 112)).bg(bg);
-
         let text_rect = Rect {
             x: cols[1].x + 1,
             y: cols[1].y,
             width: cols[1].width.saturating_sub(1),
             height: COVER_H,
         };
-        let owner_tag = if pl.owner { "" } else { "  ⊘" };
+
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
@@ -144,7 +135,14 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState) {
                 ]),
                 Line::from(vec![
                     Span::styled("    │ ", num),
-                    Span::styled(format!("{} tracks{owner_tag}", pl.track_count), dim),
+                    Span::styled(
+                        format!(
+                            "{} tracks{}",
+                            pl.track_count,
+                            if pl.owner { "" } else { "  ⊘" }
+                        ),
+                        dim,
+                    ),
                 ]),
                 Line::from(vec![Span::styled("    │", num)]),
                 Line::from(vec![Span::styled("    │", num)]),
@@ -160,7 +158,6 @@ fn render_liked(frame: &mut Frame, area: Rect, state: &AppState) {
     let pl_len = state.playlists.len();
     let selected = state.navigation.selected_index == pl_len;
     let rel = (pl_len as isize - state.navigation.selected_index as isize).unsigned_abs();
-
     let hl = if is_active && selected {
         Style::default()
             .bg(Color::Rgb(60, 65, 80))
@@ -172,7 +169,6 @@ fn render_liked(frame: &mut Frame, area: Rect, state: &AppState) {
             .fg(Color::Rgb(120, 120, 130))
             .add_modifier(Modifier::DIM)
     };
-
     let item = ListItem::new(Line::from(vec![
         Span::styled(
             format!("{rel:>3} │ "),
@@ -180,12 +176,10 @@ fn render_liked(frame: &mut Frame, area: Rect, state: &AppState) {
         ),
         Span::raw("♥  Liked Songs"),
     ]));
-
     let mut ls = ListState::default();
     if selected {
         ls.select(Some(0));
     }
-
     frame.render_stateful_widget(
         List::new(vec![item])
             .block(

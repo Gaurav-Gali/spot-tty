@@ -1,5 +1,5 @@
 use crate::services::spotify::{PlaylistSummary, TrackSummary};
-use crate::ui::cover::CoverArt;
+use crate::ui::cover::CoverImage;
 
 pub enum AppEvent {
     Quit,
@@ -7,8 +7,7 @@ pub enum AppEvent {
     PlaylistsLoaded(Vec<PlaylistSummary>),
     LikedTracksLoaded(Vec<TrackSummary>),
     ExplorerTracksLoaded(Vec<TrackSummary>),
-    /// (url, small_art, large_art)
-    CoverLoaded(String, CoverArt, CoverArt),
+    CoverLoaded(String, CoverImage),
     LoadError(String),
     MoveDown(usize),
     MoveUp(usize),

@@ -1,6 +1,7 @@
 use super::events::AppEvent;
 use super::reducer::reduce;
 use super::state::{AppState, AppStatus, Focus, KeyMode, NavigationState};
+use crate::ui::cover::{detect_protocol, RenderCache};
 use std::collections::HashMap;
 
 pub struct App {
@@ -9,10 +10,14 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
+        let protocol = detect_protocol();
+        tracing::info!("Image protocol: {:?}", protocol);
         Self {
             state: AppState {
                 status: AppStatus::Loading,
                 should_quit: false,
+                image_protocol: protocol,
+                render_cache: RenderCache::default(),
                 loaded_user: false,
                 loaded_playlists: false,
                 loaded_liked: false,
@@ -21,8 +26,7 @@ impl App {
                 playlists: vec![],
                 liked_tracks: vec![],
                 explorer_items: vec![],
-                cover_cache_small: HashMap::new(),
-                cover_cache_large: HashMap::new(),
+                cover_cache: HashMap::new(),
                 navigation: NavigationState { selected_index: 0 },
                 explorer_stack: vec![],
                 explorer_selected_index: 0,
