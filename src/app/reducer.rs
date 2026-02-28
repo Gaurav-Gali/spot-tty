@@ -7,6 +7,7 @@ use std::time::Instant;
 pub fn reduce(state: &mut AppState, event: AppEvent) {
     match event {
         AppEvent::Quit => state.should_quit = true,
+
         AppEvent::UserLoaded(name) => {
             state.user_name = Some(name);
             state.loaded_user = true;
@@ -41,6 +42,8 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             state.error_message = Some(msg);
             check_ready(state);
         }
+
+        // ── Navigation ────────────────────────────────────────────────────────
         AppEvent::MoveDown(n) => {
             move_cursor(state, n as isize);
             state.last_nav_move = Some(Instant::now());
@@ -63,8 +66,12 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             set_cursor(state, m / 2);
             state.last_nav_move = Some(Instant::now());
         }
+
         AppEvent::Enter => {
-            state.focus = Focus::Explorer;
+            if state.focus == Focus::Sidebar {
+                state.focus = Focus::Explorer;
+            }
+            // If already in explorer, Enter is handled by main.rs to play the track
         }
         AppEvent::Back => {
             state.focus = Focus::Sidebar;
@@ -81,8 +88,30 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             state.key_mode = KeyMode::Normal;
             state.last_nav_move = Some(Instant::now());
         }
+
+        // ── Playback ──────────────────────────────────────────────────────────
+        AppEvent::PlayTrack {
+            track: _,
+            context_uri,
+        } => {
+            state.playing_context_uri = context_uri;
+        }
+        AppEvent::DevicesUpdated(devs) => {
+            state.devices = devs;
+        }
+        AppEvent::TogglePause => {
+            // HTTP call fired by main.rs; optimistically flip is_playing
+            if let Some(p) = &mut state.playback {
+                p.is_playing = !p.is_playing;
+            }
+        }
+        AppEvent::PlaybackStateUpdated(ps) => {
+            state.playback = ps;
+        }
     }
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn move_cursor(state: &mut AppState, delta: isize) {
     let max = max_index(state) as isize;
@@ -98,6 +127,7 @@ fn move_cursor(state: &mut AppState, delta: isize) {
         }
     }
 }
+
 fn set_cursor(state: &mut AppState, idx: usize) {
     match state.focus {
         Focus::Sidebar => {
@@ -109,12 +139,14 @@ fn set_cursor(state: &mut AppState, idx: usize) {
         }
     }
 }
+
 fn max_index(state: &AppState) -> usize {
     match state.focus {
         Focus::Sidebar => (state.playlists.len() + 1).saturating_sub(1),
         Focus::Explorer => state.explorer_items.len().saturating_sub(1),
     }
 }
+
 fn update_sidebar_selection(state: &mut AppState) {
     let idx = state.navigation.selected_index;
     let pl_len = state.playlists.len();
@@ -140,6 +172,7 @@ fn update_sidebar_selection(state: &mut AppState) {
         }
     }
 }
+
 fn nodes_equal(a: &ExplorerNode, b: &ExplorerNode) -> bool {
     match (a, b) {
         (ExplorerNode::PlaylistTracks(id1, ..), ExplorerNode::PlaylistTracks(id2, ..)) => {
@@ -149,6 +182,7 @@ fn nodes_equal(a: &ExplorerNode, b: &ExplorerNode) -> bool {
         _ => false,
     }
 }
+
 fn check_ready(state: &mut AppState) {
     if state.status == AppStatus::Loading
         && state.loaded_user

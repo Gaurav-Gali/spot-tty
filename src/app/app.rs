@@ -12,7 +12,6 @@ impl App {
     pub fn new() -> Self {
         let protocol = detect_protocol();
         tracing::info!("Image protocol: {:?}", protocol);
-
         Self {
             state: AppState {
                 status: AppStatus::Loading,
@@ -36,13 +35,14 @@ impl App {
                 focus: Focus::Sidebar,
                 pending_count: None,
                 error_message: None,
-                playback_progress: 0.0,
                 visualizer_phase: 0,
                 last_nav_move: None,
+                playback: None,
+                playing_context_uri: None,
+                devices: vec![],
             },
         }
     }
-
     pub fn handle_event(&mut self, event: AppEvent) {
         reduce(&mut self.state, event);
     }

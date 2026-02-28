@@ -1,4 +1,4 @@
-use crate::services::spotify::{PlaylistSummary, TrackSummary};
+use crate::services::spotify::{Device, PlaybackState, PlaylistSummary, TrackSummary};
 use crate::ui::cover::CoverImage;
 
 pub enum AppEvent {
@@ -9,6 +9,7 @@ pub enum AppEvent {
     ExplorerTracksLoaded(Vec<TrackSummary>),
     CoverLoaded(String, CoverImage),
     LoadError(String),
+    // Navigation
     MoveDown(usize),
     MoveUp(usize),
     GoTop,
@@ -18,4 +19,12 @@ pub enum AppEvent {
     Back,
     JumpToPlaylists,
     JumpToLiked,
+    // Playback
+    PlayTrack {
+        track: TrackSummary,
+        context_uri: Option<String>,
+    },
+    TogglePause,
+    PlaybackStateUpdated(Option<PlaybackState>),
+    DevicesUpdated(Vec<Device>),
 }

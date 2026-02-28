@@ -1,4 +1,4 @@
-use crate::services::spotify::{PlaylistSummary, TrackSummary};
+use crate::services::spotify::{Device, PlaybackState, PlaylistSummary, TrackSummary};
 use crate::ui::cover::{CoverImage, ImageProtocol, RenderCache};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -48,9 +48,7 @@ pub struct AppState {
     pub liked_tracks: Vec<TrackSummary>,
     pub explorer_items: Vec<TrackSummary>,
 
-    /// url → fully loaded CoverImage (in memory + uploaded to terminal)
     pub cover_cache: HashMap<String, CoverImage>,
-    /// URLs currently being fetched — prevents duplicate requests
     pub cover_fetching: HashSet<String>,
 
     pub navigation: NavigationState,
@@ -61,19 +59,49 @@ pub struct AppState {
     pub pending_count: Option<usize>,
 
     pub error_message: Option<String>,
-    pub playback_progress: f64,
     pub visualizer_phase: usize,
-
-    /// Debounce: timestamp of last navigation move.
-    /// Detail panel image only renders once this is >120ms ago.
     pub last_nav_move: Option<Instant>,
+
+    // ── Playback ──────────────────────────────────────────────────────────────
+    pub playback: Option<PlaybackState>,
+    pub playing_context_uri: Option<String>,
+    /// All available Spotify devices (refreshed on startup + after each play)
+    pub devices: Vec<Device>,
 }
 
 impl AppState {
-    /// True if the user has stopped scrolling long enough to render the large cover.
     pub fn scroll_settled(&self) -> bool {
         self.last_nav_move
             .map(|t| t.elapsed().as_millis() >= 120)
             .unwrap_or(true)
+    }
+
+    pub fn playback_progress(&self) -> f64 {
+        match &self.playback {
+            Some(p) if p.duration_ms > 0 => p.progress_ms as f64 / p.duration_ms as f64,
+            _ => 0.0,
+        }
+    }
+
+    pub fn is_playing_track(&self, track_id: &str) -> bool {
+        self.playback
+            .as_ref()
+            .map(|p| p.track_id == track_id)
+            .unwrap_or(false)
+    }
+
+    /// Active device first, then first available, then None.
+    pub fn best_device_id(&self) -> Option<String> {
+        // Prefer the device Spotify says is currently active
+        if let Some(p) = &self.playback {
+            if let Some(id) = &p.device_id {
+                return Some(id.clone());
+            }
+        }
+        self.devices
+            .iter()
+            .find(|d| d.is_active)
+            .or_else(|| self.devices.first())
+            .map(|d| d.id.clone())
     }
 }

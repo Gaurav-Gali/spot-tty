@@ -8,34 +8,46 @@ use ratatui::{
 };
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
-    // ─────────────────────────────────────────────
-    // Title / breadcrumb
-    // ─────────────────────────────────────────────
+    // ── Breadcrumb + now playing track name ───────────────────────────────────
     let breadcrumb = match state.explorer_stack.last() {
-        Some(ExplorerNode::PlaylistTracks(_, name, _)) => format!("Library › Playlist › {}", name),
-        Some(ExplorerNode::LikedTracks) => "Library › Liked Songs".to_string(),
-        None => "Library".to_string(),
+        Some(ExplorerNode::PlaylistTracks(_, name, _)) => format!("Library › {} ", name),
+        Some(ExplorerNode::LikedTracks) => "Library › Liked Songs ".to_string(),
+        None => "Library ".to_string(),
     };
 
-    let current_track = "Track Name";
-    let title = Line::from(vec![
-        Span::raw(breadcrumb),
-        Span::raw(" › "),
-        Span::styled(
-            current_track,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    let title_line = if let Some(p) = &state.playback {
+        let icon = if p.is_playing { "▶" } else { "⏸" };
+        Line::from(vec![
+            Span::styled(
+                format!(" {breadcrumb}› "),
+                Style::default().fg(Color::Rgb(100, 100, 110)),
+            ),
+            Span::styled(icon, Style::default().fg(Color::Rgb(137, 180, 130))),
+            Span::raw(" "),
+            Span::styled(
+                format!("{} — {}", p.track_name, p.artist),
+                Style::default()
+                    .fg(Color::Rgb(245, 224, 220))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                format!(" {breadcrumb}"),
+                Style::default().fg(Color::Rgb(100, 100, 110)),
+            ),
+            Span::styled(
+                "No active playback",
+                Style::default().fg(Color::Rgb(88, 91, 112)),
+            ),
+        ])
+    };
 
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = Block::default().borders(Borders::ALL).title(title_line);
     frame.render_widget(block.clone(), area);
     let inner = block.inner(area);
 
-    // ─────────────────────────────────────────────
-    // Padding
-    // ─────────────────────────────────────────────
     let padded = Rect {
         x: inner.x + 2,
         y: inner.y,
@@ -46,10 +58,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(14),
-            Constraint::Min(10),
-            Constraint::Length(4),
-            Constraint::Length(16),
+            Constraint::Length(14), // playhead "▶ 1:23 / 3:45"
+            Constraint::Min(10),    // progress bar
+            Constraint::Length(4),  // gap
+            Constraint::Length(16), // visualizer
         ])
         .split(padded);
 
@@ -57,51 +69,67 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let sweep_area = layout[1];
     let visualizer_area = layout[3];
 
-    // ─────────────────────────────────────────────
-    // Progress bar background
-    // ─────────────────────────────────────────────
+    // ── Progress bar ──────────────────────────────────────────────────────────
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(20, 35, 20))),
         sweep_area,
     );
 
-    // ─────────────────────────────────────────────
-    // Filled progress
-    // ─────────────────────────────────────────────
-    let progress = state.playback_progress.clamp(0.0, 1.0);
-    let fill_width = (sweep_area.width as f64 * progress) as u16;
-    if fill_width > 0 {
-        let progress_rect = Rect {
-            x: sweep_area.x,
-            y: sweep_area.y,
-            width: fill_width,
-            height: sweep_area.height,
-        };
+    let progress = state.playback_progress().clamp(0.0, 1.0);
+    let fill_w = (sweep_area.width as f64 * progress) as u16;
+    if fill_w > 0 {
         frame.render_widget(
-            Block::default().style(Style::default().bg(Color::Green)),
-            progress_rect,
+            Block::default().style(Style::default().bg(Color::Rgb(137, 180, 130))),
+            Rect {
+                x: sweep_area.x,
+                y: sweep_area.y,
+                width: fill_w,
+                height: sweep_area.height,
+            },
         );
     }
 
-    // ─────────────────────────────────────────────
-    // Playhead text
-    // ─────────────────────────────────────────────
+    // ── Playhead text ─────────────────────────────────────────────────────────
+    let playhead_str = match &state.playback {
+        Some(p) => {
+            let icon = if p.is_playing { "▶" } else { "⏸" };
+            format!(
+                "{} {} / {}",
+                icon,
+                fmt_ms(p.progress_ms),
+                fmt_ms(p.duration_ms)
+            )
+        }
+        None => "  --:-- / --:--".to_string(),
+    };
     frame.render_widget(
-        Paragraph::new("▶ 1:23 / 3:45").style(Style::default().fg(Color::White)),
+        Paragraph::new(playhead_str).style(Style::default().fg(Color::Rgb(200, 200, 210))),
         playhead_area,
     );
 
-    // ─────────────────────────────────────────────
-    // Animated visualizer
-    // ─────────────────────────────────────────────
+    // ── Visualizer — only animates when playing ────────────────────────────────
     let bars = ["▂", "▅", "▇", "▆", "▃", "▂", "▇", "▅", "▃", "▂"];
-    let mut visual = String::new();
-    for i in 0..10 {
-        let index = (state.visualizer_phase + i) % bars.len();
-        visual.push_str(bars[index]);
-    }
+    let visual = if state
+        .playback
+        .as_ref()
+        .map(|p| p.is_playing)
+        .unwrap_or(false)
+    {
+        let mut s = String::new();
+        for i in 0..10 {
+            s.push_str(bars[(state.visualizer_phase + i) % bars.len()]);
+        }
+        s
+    } else {
+        "▂▂▂▂▂▂▂▂▂▂".to_string() // flat when paused
+    };
     frame.render_widget(
-        Paragraph::new(visual).style(Style::default().fg(Color::Green)),
+        Paragraph::new(visual).style(Style::default().fg(Color::Rgb(137, 180, 130))),
         visualizer_area,
     );
+}
+
+fn fmt_ms(ms: u32) -> String {
+    let s = ms / 1000;
+    format!("{}:{:02}", s / 60, s % 60)
 }

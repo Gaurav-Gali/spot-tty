@@ -160,17 +160,36 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState, is_active: bool
         .map(|(i, t)| {
             let rel = (i as isize - sel as isize).unsigned_abs();
             let is_sel = i == sel;
+            let is_playing = !t.id.is_empty() && state.is_playing_track(&t.id);
+
             let style = if is_sel && is_active {
+                // Selected cursor row
                 Style::default()
                     .bg(Color::Rgb(60, 65, 80))
                     .fg(Color::Rgb(245, 224, 220))
                     .add_modifier(Modifier::BOLD)
+            } else if is_playing {
+                // Currently playing — green tint, not selected
+                Style::default()
+                    .fg(Color::Rgb(137, 180, 130))
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Rgb(200, 200, 210))
             };
+
+            // Number cell: show ♫ for playing track, relative offset otherwise
+            let num_cell = if is_playing {
+                Cell::from(" ♫  ").style(
+                    Style::default()
+                        .fg(Color::Rgb(137, 180, 130))
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Cell::from(format!("{rel:>4} ")).style(Style::default().fg(Color::Rgb(88, 91, 112)))
+            };
+
             Row::new(vec![
-                Cell::from(format!("{rel:>4} "))
-                    .style(Style::default().fg(Color::Rgb(88, 91, 112))),
+                num_cell,
                 Cell::from(trunc(&t.name, title_w as usize)),
                 Cell::from(trunc(&t.artist, 22)),
                 Cell::from(trunc(&t.album, 22)),

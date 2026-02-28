@@ -19,7 +19,7 @@ mod ui;
 use app::{
     app::App,
     events::AppEvent,
-    state::{ExplorerNode, KeyMode},
+    state::{ExplorerNode, Focus, KeyMode},
 };
 use config::settings::Settings;
 use services::{auth, spotify as svc};
@@ -50,33 +50,52 @@ async fn main() -> anyhow::Result<()> {
     spawn_initial_fetches(spotify.clone(), tx.clone());
 
     let tick_rate = Duration::from_millis(150);
+    let poll_rate = Duration::from_secs(2);
     let mut last_tick = Instant::now();
+    let mut last_poll = Instant::now();
     let mut last_node: Option<ExplorerNode> = None;
     let mut fetch_in_progress = false;
 
     loop {
+        // ── Tick ──────────────────────────────────────────────────────────────
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
-            app.state.playback_progress += 0.01;
-            if app.state.playback_progress > 1.0 {
-                app.state.playback_progress = 0.0;
+            if app
+                .state
+                .playback
+                .as_ref()
+                .map(|p| p.is_playing)
+                .unwrap_or(false)
+            {
+                app.state.visualizer_phase = (app.state.visualizer_phase + 1) % 100;
+                if let Some(p) = &mut app.state.playback {
+                    p.progress_ms = (p.progress_ms + 150).min(p.duration_ms);
+                }
             }
-            app.state.visualizer_phase = (app.state.visualizer_phase + 1) % 1000;
+        }
+
+        // ── Poll playback state every 2 s ─────────────────────────────────────
+        if last_poll.elapsed() >= poll_rate {
+            last_poll = Instant::now();
+            let sp = spotify.clone();
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                match svc::fetch_playback_state(&sp).await {
+                    Ok(s) => {
+                        let _ = tx2.send(AppEvent::PlaybackStateUpdated(s));
+                    }
+                    Err(e) => tracing::warn!("playback poll: {e:#}"),
+                }
+            });
         }
 
         // ── Lazy cover fetching ───────────────────────────────────────────────
-        // Each frame: collect URLs visible on screen right now, fetch only what's
-        // missing and not already in-flight. This limits concurrent fetches and
-        // avoids hammering 200 URLs at startup.
         {
             let size = terminal.size().unwrap_or_default();
             let areas = ui::layout::split(size);
-
-            // Sidebar: visible playlist image URLs
             let sidebar_urls: Vec<String> = {
                 let sel = app.state.navigation.selected_index;
-                let h = areas.sidebar.height.saturating_sub(8); // minus borders/header/liked
-                let vis = (h / 4) as usize; // COVER_H = 4
+                let vis = (areas.sidebar.height.saturating_sub(8) / 4) as usize;
                 let scroll = sel.saturating_sub(vis.saturating_sub(1));
                 app.state
                     .playlists
@@ -86,18 +105,22 @@ async fn main() -> anyhow::Result<()> {
                     .filter_map(|p| p.image_url.clone())
                     .collect()
             };
-
-            // Explorer: visible track URLs
-            let explorer_urls = ui::explorer::visible_cover_urls(&app.state, areas.main);
-
-            // Merge: selected track first (highest priority), then visible rows
-            let mut all_urls: Vec<String> = explorer_urls;
+            let mut all_urls = ui::explorer::visible_cover_urls(&app.state, areas.main);
             for u in sidebar_urls {
                 if !all_urls.contains(&u) {
                     all_urls.push(u);
                 }
             }
-
+            if let Some(url) = app
+                .state
+                .playback
+                .as_ref()
+                .and_then(|p| p.album_image_url.as_ref())
+            {
+                if !all_urls.contains(url) {
+                    all_urls.insert(0, url.clone());
+                }
+            }
             for url in all_urls {
                 if !app.state.cover_cache.contains_key(&url)
                     && !app.state.cover_fetching.contains(&url)
@@ -117,20 +140,17 @@ async fn main() -> anyhow::Result<()> {
         app.state.render_cache.begin_frame();
         let cache_ptr = &mut app.state.render_cache as *mut _;
         terminal.draw(|f| {
-            // SAFETY: render_cache not aliased; AppState fields are read-only here.
             let cache = unsafe { &mut *cache_ptr };
             let areas = ui::layout::split(f.size());
             ui::sidebar::render(f, areas.sidebar, &app.state, cache);
             ui::explorer::render(f, areas.main, &app.state, cache);
             ui::player::render(f, areas.control, &app.state);
         })?;
-        // One stdout write for all queued Kitty/iTerm2 sequences
         app.state.render_cache.flush();
 
         // ── Events ────────────────────────────────────────────────────────────
         while let Ok(ev) = rx.try_recv() {
             match &ev {
-                // On track load: do NOT bulk-spawn covers — lazy loop above handles it
                 AppEvent::ExplorerTracksLoaded(_) => {
                     fetch_in_progress = false;
                 }
@@ -156,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
         // ── Input ─────────────────────────────────────────────────────────────
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
+                // Digit prefix accumulation
                 if let KeyCode::Char(c) = key.code {
                     if c.is_ascii_digit() {
                         let d = c.to_digit(10).unwrap() as usize;
@@ -165,22 +186,42 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let count = app.state.pending_count.take().unwrap_or(1);
+
                 match app.state.key_mode {
-                    KeyMode::Normal => match key.code {
-                        KeyCode::Char('j') | KeyCode::Down => tx.send(AppEvent::MoveDown(count))?,
-                        KeyCode::Char('k') | KeyCode::Up => tx.send(AppEvent::MoveUp(count))?,
-                        KeyCode::Char('G') => tx.send(AppEvent::GoBottom)?,
-                        KeyCode::Char('M') => tx.send(AppEvent::GoMiddle)?,
-                        KeyCode::Char('g') => app.state.key_mode = KeyMode::AwaitingG,
-                        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-                            tx.send(AppEvent::Enter)?
+                    KeyMode::Normal => {
+                        match key.code {
+                            // Motion
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                tx.send(AppEvent::MoveDown(count))?
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => tx.send(AppEvent::MoveUp(count))?,
+                            KeyCode::Char('G') => tx.send(AppEvent::GoBottom)?,
+                            KeyCode::Char('M') => tx.send(AppEvent::GoMiddle)?,
+                            KeyCode::Char('g') => app.state.key_mode = KeyMode::AwaitingG,
+                            // Focus switching (l/h never play)
+                            KeyCode::Char('l') | KeyCode::Right => tx.send(AppEvent::Enter)?,
+                            KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+                                tx.send(AppEvent::Back)?
+                            }
+
+                            // Enter = play if in Explorer, else focus switch
+                            KeyCode::Enter => {
+                                if app.state.focus == Focus::Explorer {
+                                    fire_play(&app, &spotify, &tx);
+                                } else {
+                                    tx.send(AppEvent::Enter)?;
+                                }
+                            }
+
+                            // Space = pause/resume
+                            KeyCode::Char(' ') => {
+                                fire_toggle_pause(&app, &spotify, &tx);
+                            }
+
+                            KeyCode::Char('q') => tx.send(AppEvent::Quit)?,
+                            _ => {}
                         }
-                        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-                            tx.send(AppEvent::Back)?
-                        }
-                        KeyCode::Char('q') => tx.send(AppEvent::Quit)?,
-                        _ => {}
-                    },
+                    }
                     KeyMode::AwaitingG => {
                         match key.code {
                             KeyCode::Char('g') => tx.send(AppEvent::GoTop)?,
@@ -193,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+
         if app.state.should_quit {
             break;
         }
@@ -203,6 +245,120 @@ async fn main() -> anyhow::Result<()> {
     terminal.show_cursor()?;
     Ok(())
 }
+
+// ── Play helpers (extracted so the match arm stays readable) ──────────────────
+
+fn fire_play(app: &App, spotify: &AuthCodePkceSpotify, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let idx = app.state.explorer_selected_index;
+    let Some(track) = app.state.explorer_items.get(idx).cloned() else {
+        return;
+    };
+    if track.id.is_empty() {
+        tracing::warn!("fire_play: track has no id, skipping");
+        return;
+    }
+
+    let context_uri = match app.state.explorer_stack.last() {
+        Some(ExplorerNode::PlaylistTracks(id, _, _)) => Some(format!("spotify:playlist:{id}")),
+        _ => None,
+    };
+    let track_uri = format!("spotify:track:{}", track.id);
+    let device_id = app.state.best_device_id();
+
+    tracing::info!(
+        "fire_play: track='{}' id='{}' device={:?} context={:?}",
+        track.name,
+        track.id,
+        device_id,
+        context_uri
+    );
+
+    let ctx = context_uri.clone();
+    let sp = spotify.clone();
+    let tx2 = tx.clone();
+    tokio::spawn(async move {
+        // Step 1: ensure we have a device — fetch fresh list if needed
+        let dev = match device_id {
+            Some(d) => {
+                tracing::info!("Using cached device: {d}");
+                Some(d)
+            }
+            None => {
+                tracing::warn!("No cached device — fetching device list");
+                match svc::fetch_devices(&sp).await {
+                    Ok(devs) => {
+                        tracing::info!(
+                            "Available devices: {:?}",
+                            devs.iter().map(|d| &d.name).collect::<Vec<_>>()
+                        );
+                        let _ = tx2.send(AppEvent::DevicesUpdated(devs.clone()));
+                        devs.into_iter().find(|d| d.is_active).map(|d| d.id)
+                    }
+                    Err(e) => {
+                        tracing::error!("fetch_devices failed: {e:#}");
+                        None
+                    }
+                }
+            }
+        };
+
+        tracing::info!("Calling play_track with device={:?}", dev);
+        match svc::play_track(&sp, &track_uri, ctx.as_deref(), dev.as_deref()).await {
+            Ok(_) => {
+                tracing::info!("play_track OK — polling state");
+                sleep(Duration::from_millis(400)).await;
+                match svc::fetch_playback_state(&sp).await {
+                    Ok(ps) => {
+                        tracing::info!("Post-play state: {:?}", ps.as_ref().map(|p| &p.track_name));
+                        let _ = tx2.send(AppEvent::PlaybackStateUpdated(ps));
+                    }
+                    Err(e) => tracing::error!("post-play poll: {e:#}"),
+                }
+                // Refresh device list too
+                if let Ok(devs) = svc::fetch_devices(&sp).await {
+                    let _ = tx2.send(AppEvent::DevicesUpdated(devs));
+                }
+            }
+            Err(e) => tracing::error!("play_track FAILED: {e:#}"),
+        }
+    });
+
+    let _ = tx.send(AppEvent::PlayTrack { track, context_uri });
+}
+
+fn fire_toggle_pause(
+    app: &App,
+    spotify: &AuthCodePkceSpotify,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let is_playing = app
+        .state
+        .playback
+        .as_ref()
+        .map(|p| p.is_playing)
+        .unwrap_or(false);
+    tracing::info!("fire_toggle_pause: is_playing={is_playing}");
+    let sp = spotify.clone();
+    let tx2 = tx.clone();
+    tokio::spawn(async move {
+        let result = if is_playing {
+            svc::pause(&sp).await
+        } else {
+            svc::resume(&sp).await
+        };
+        match result {
+            Ok(_) => tracing::info!("toggle_pause OK"),
+            Err(e) => tracing::error!("toggle_pause FAILED: {e:#}"),
+        }
+        sleep(Duration::from_millis(300)).await;
+        if let Ok(ps) = svc::fetch_playback_state(&sp).await {
+            let _ = tx2.send(AppEvent::PlaybackStateUpdated(ps));
+        }
+    });
+    let _ = tx.send(AppEvent::TogglePause);
+}
+
+// ── Startup ───────────────────────────────────────────────────────────────────
 
 fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender<AppEvent>) {
     {
@@ -244,7 +400,34 @@ fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender
             }
         });
     }
+    // Fetch devices + initial playback state on startup
+    {
+        let (sp, tx) = (spotify.clone(), tx.clone());
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(500)).await;
+            match svc::fetch_devices(&sp).await {
+                Ok(devs) => {
+                    tracing::info!(
+                        "Startup devices: {:?}",
+                        devs.iter()
+                            .map(|d| format!("{} active={}", d.name, d.is_active))
+                            .collect::<Vec<_>>()
+                    );
+                    let _ = tx.send(AppEvent::DevicesUpdated(devs));
+                }
+                Err(e) => tracing::error!("fetch_devices: {e:#}"),
+            }
+            match svc::fetch_playback_state(&sp).await {
+                Ok(ps) => {
+                    let _ = tx.send(AppEvent::PlaybackStateUpdated(ps));
+                }
+                Err(e) => tracing::error!("initial playback state: {e:#}"),
+            }
+        });
+    }
 }
+
+// ── Explorer fetch ────────────────────────────────────────────────────────────
 
 fn maybe_fetch_explorer(
     current: &Option<ExplorerNode>,

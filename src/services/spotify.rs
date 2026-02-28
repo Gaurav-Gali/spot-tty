@@ -292,3 +292,207 @@ fn to_summary(t: &RawTrack) -> TrackSummary {
         duration_ms: t.duration_ms,
     }
 }
+
+// ── Playback ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct PlaybackState {
+    pub track_id: String,
+    pub track_name: String,
+    pub artist: String,
+    pub album: String,
+    pub album_image_url: Option<String>,
+    pub duration_ms: u32,
+    pub progress_ms: u32,
+    pub is_playing: bool,
+    pub device_id: Option<String>,
+}
+
+/// PUT /me/player/play — start playing a specific track.
+/// `context_uri` is the playlist URI (e.g. "spotify:playlist:xxx") so Spotify
+/// knows the queue context. `track_uri` is "spotify:track:xxx".
+/// Pass `context_uri = None` to play the track without a queue context.
+pub async fn play_track(
+    sp: &AuthCodePkceSpotify,
+    track_uri: &str,
+    context_uri: Option<&str>,
+    device_id: Option<&str>,
+) -> Result<()> {
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+
+    let body = match context_uri {
+        Some(ctx) => serde_json::json!({
+            "context_uri": ctx,
+            "offset": { "uri": track_uri }
+        }),
+        None => serde_json::json!({
+            "uris": [track_uri]
+        }),
+    };
+
+    let url = match device_id {
+        Some(d) => format!("{BASE}/me/player/play?device_id={d}"),
+        None => format!("{BASE}/me/player/play"),
+    };
+
+    put_no_body(&c, &url, &tok, Some(body)).await
+}
+
+/// PUT /me/player/pause
+pub async fn pause(sp: &AuthCodePkceSpotify) -> Result<()> {
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    put_no_body(&c, &format!("{BASE}/me/player/pause"), &tok, None).await
+}
+
+/// PUT /me/player/play (no body = resume)
+pub async fn resume(sp: &AuthCodePkceSpotify) -> Result<()> {
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    put_no_body(&c, &format!("{BASE}/me/player/play"), &tok, None).await
+}
+
+/// GET /me/player — current playback state
+pub async fn fetch_playback_state(sp: &AuthCodePkceSpotify) -> Result<Option<PlaybackState>> {
+    #[derive(Deserialize)]
+    struct Player {
+        is_playing: bool,
+        progress_ms: Option<u32>,
+        item: Option<PlayerTrack>,
+        device: Option<PlayerDevice>,
+    }
+    #[derive(Deserialize)]
+    struct PlayerTrack {
+        id: Option<String>,
+        name: String,
+        duration_ms: u32,
+        artists: Vec<RawArtist>,
+        album: Option<RawAlbum>,
+    }
+    #[derive(Deserialize)]
+    struct PlayerDevice {
+        id: Option<String>,
+    }
+
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    let resp = c
+        .get(&format!("{BASE}/me/player"))
+        .bearer_auth(&tok)
+        .send()
+        .await?;
+
+    if resp.status().as_u16() == 204 {
+        return Ok(None);
+    } // no active device
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let text = resp.text().await?;
+    if text.is_empty() {
+        return Ok(None);
+    }
+
+    let player: Player = match serde_json::from_str(&text) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+
+    let Some(item) = player.item else {
+        return Ok(None);
+    };
+
+    Ok(Some(PlaybackState {
+        track_id: item.id.clone().unwrap_or_default(),
+        track_name: item.name.clone(),
+        artist: item
+            .artists
+            .first()
+            .map(|a| a.name.clone())
+            .unwrap_or_default(),
+        album: item
+            .album
+            .as_ref()
+            .map(|a| a.name.clone())
+            .unwrap_or_default(),
+        album_image_url: item
+            .album
+            .as_ref()
+            .and_then(|a| best_image(a.images.as_deref())),
+        duration_ms: item.duration_ms,
+        progress_ms: player.progress_ms.unwrap_or(0),
+        is_playing: player.is_playing,
+        device_id: player.device.and_then(|d| d.id),
+    }))
+}
+
+// ── PUT helper ────────────────────────────────────────────────────────────────
+
+async fn put_no_body(
+    client: &reqwest::Client,
+    url: &str,
+    tok: &str,
+    body: Option<serde_json::Value>,
+) -> Result<()> {
+    let mut req = client
+        .put(url)
+        .bearer_auth(tok)
+        .header("Content-Type", "application/json");
+    req = match body {
+        Some(b) => req.body(b.to_string()),
+        None => req.header("Content-Length", "0"),
+    };
+    let resp = req.send().await?;
+    let status = resp.status().as_u16();
+    match status {
+        200 | 204 => Ok(()),
+        404 => {
+            // No active device — common; not fatal
+            warn!("Playback: no active device (404)");
+            Ok(())
+        }
+        _ => bail!(
+            "PUT {url} → HTTP {status}: {}",
+            resp.text().await.unwrap_or_default()
+        ),
+    }
+}
+
+// ── Device listing ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    pub is_active: bool,
+}
+
+/// GET /me/player/devices — all available devices
+pub async fn fetch_devices(sp: &AuthCodePkceSpotify) -> Result<Vec<Device>> {
+    #[derive(Deserialize)]
+    struct Resp {
+        devices: Vec<RawDevice>,
+    }
+    #[derive(Deserialize)]
+    struct RawDevice {
+        id: Option<String>,
+        name: String,
+        is_active: bool,
+    }
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    let resp: Resp = get(&c, &format!("{BASE}/me/player/devices"), &tok).await?;
+    Ok(resp
+        .devices
+        .into_iter()
+        .filter_map(|d| {
+            d.id.map(|id| Device {
+                id,
+                name: d.name,
+                is_active: d.is_active,
+            })
+        })
+        .collect())
+}
