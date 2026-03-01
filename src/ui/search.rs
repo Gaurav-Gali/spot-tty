@@ -1,8 +1,4 @@
-//! Full-screen fuzzy search overlay.
-//!
-//! Activated by `/` from anywhere. Searches across ALL tracks the user has
-//! (liked + every loaded playlist). Results update as you type.
-//! Press Enter to play, Esc to close.
+//! Fuzzy search overlay.
 
 use crate::app::state::AppState;
 use crate::services::spotify::TrackSummary;
@@ -14,12 +10,6 @@ use ratatui::{
     Frame,
 };
 
-// ── Fuzzy scorer ──────────────────────────────────────────────────────────────
-
-/// Simple but effective fuzzy score:
-/// - All query chars must appear in haystack in order (subsequence match)
-/// - Score = bonus for consecutive matches + bonus for early match + bonus for word-start
-/// Returns None if not a match.
 pub fn fuzzy_score(query: &str, haystack: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
@@ -73,8 +63,6 @@ pub fn score_track(query: &str, track: &TrackSummary) -> Option<i32> {
         .max()
 }
 
-// ── State (lives in AppState as SearchState) ──────────────────────────────────
-
 #[derive(Default, Clone)]
 pub struct SearchState {
     pub query: String,
@@ -127,8 +115,6 @@ impl SearchState {
     }
 }
 
-// ── Renderer ──────────────────────────────────────────────────────────────────
-
 pub fn render(frame: &mut Frame, state: &AppState) {
     let area = centered_rect(70, 80, frame.size());
 
@@ -156,7 +142,6 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         ])
         .split(inner);
 
-    // ── Query input ───────────────────────────────────────────────────────────
     let search = &state.search;
     let query_display = format!(" {} ", search.query);
     frame.render_widget(
@@ -174,7 +159,6 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         layout[0],
     );
 
-    // ── Results list ──────────────────────────────────────────────────────────
     let sel = search.selected;
     let items: Vec<ListItem> = search
         .results
@@ -255,7 +239,6 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         &mut list_state,
     );
 
-    // ── Hint bar ──────────────────────────────────────────────────────────────
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -286,8 +269,6 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         layout[2],
     );
 }
-
-// ── Layout helper ─────────────────────────────────────────────────────────────
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_w = r.width * percent_x / 100;

@@ -70,23 +70,19 @@ pub struct AppState {
     pub visualizer_phase: usize,
     pub last_nav_move: Option<Instant>,
 
-    // ── Playback ──────────────────────────────────────────────────────────────
     pub playback: Option<PlaybackState>,
     pub playing_context_uri: Option<String>,
     pub devices: Vec<Device>,
 
-    // ── Overlays ──────────────────────────────────────────────────────────────
     pub search: SearchState,
     pub track_menu: TrackMenuState,
     pub profile: ProfileState,
     pub user_profile: Option<UserProfile>,
-    pub cached_stats: UserStats, // recomputed on data change, not every frame
+    pub cached_stats: UserStats,
 
-    /// Flat list of all tracks across liked + all loaded playlists — for search
     pub all_tracks: Vec<TrackSummary>,
 
-    /// Toast notification shown bottom-right after actions
-    pub toast: Option<(String, Instant)>, // (message, shown_at)
+    pub toast: Option<(String, Instant)>,
 }
 
 impl AppState {

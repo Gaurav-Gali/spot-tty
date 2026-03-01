@@ -1,6 +1,4 @@
-//! Profile overlay — press `p` to open.
-//!
-//! Layout: left nav (22 cols) │ right content panel
+//! Profile overlay.
 
 use crate::app::state::AppState;
 use crate::ui::search::centered_rect;
@@ -12,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-// ── Section ───────────────────────────────────────────────────────────────────
+
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum ProfileSection {
@@ -67,7 +65,7 @@ impl ProfileState {
     }
 }
 
-// ── Palette ───────────────────────────────────────────────────────────────────
+
 const ACCENT: Color = Color::Rgb(137, 180, 130);
 const MAUVE: Color = Color::Rgb(198, 160, 246);
 const PEACH: Color = Color::Rgb(235, 160, 100);
@@ -78,7 +76,7 @@ const OVERLAY: Color = Color::Rgb(49, 50, 68);
 const SEL_BG: Color = Color::Rgb(40, 44, 60);
 const BASE: Color = Color::Reset; // matches app background
 
-// ── Top-level render ──────────────────────────────────────────────────────────
+
 
 pub fn render(frame: &mut Frame, state: &AppState) {
     let area = centered_rect(82, 88, frame.size());
@@ -125,7 +123,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     }
 }
 
-// ── Left nav ──────────────────────────────────────────────────────────────────
+
 
 fn render_left_nav(frame: &mut Frame, area: Rect, state: &AppState) {
     // Fill background
@@ -180,7 +178,7 @@ fn render_left_nav(frame: &mut Frame, area: Rect, state: &AppState) {
     );
 }
 
-// ── Profile section ───────────────────────────────────────────────────────────
+
 
 fn render_profile(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(Block::default().style(Style::default().bg(BASE)), area);
@@ -193,7 +191,7 @@ fn render_profile(frame: &mut Frame, area: Rect, state: &AppState) {
     let content = pad(rows[0], 3, 2);
 
     if let Some(p) = &state.user_profile {
-        // ── Name header ───────────────────────────────────────────────────────
+
         let initial = p
             .display_name
             .chars()
@@ -242,7 +240,7 @@ fn render_profile(frame: &mut Frame, area: Rect, state: &AppState) {
             Line::from(""),
         ];
 
-        // ── Fields ────────────────────────────────────────────────────────────
+
         lines.push(fline("ID", p.id.clone()));
         if let Some(e) = &p.email {
             lines.push(fline("Email", e.clone()));
@@ -253,7 +251,7 @@ fn render_profile(frame: &mut Frame, area: Rect, state: &AppState) {
         lines.push(fline("Followers", p.followers.to_string()));
         lines.push(Line::from(""));
 
-        // ── Quick stats ───────────────────────────────────────────────────────
+
         lines.push(fstat("Playlists", state.playlists.len().to_string()));
         lines.push(fstat("Liked songs", state.liked_tracks.len().to_string()));
 
@@ -269,7 +267,7 @@ fn render_profile(frame: &mut Frame, area: Rect, state: &AppState) {
         );
     }
 
-    // ── Logout button ─────────────────────────────────────────────────────────
+
     let is_sel = state.profile.logout_sel;
     frame.render_widget(
         Block::default()
@@ -312,7 +310,7 @@ fn render_profile(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 }
 
-// ── Stats section ─────────────────────────────────────────────────────────────
+
 
 fn render_stats(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(Block::default().style(Style::default().bg(BASE)), area);
@@ -331,7 +329,7 @@ fn render_stats(frame: &mut Frame, area: Rect, state: &AppState) {
     let left = cols[0];
     let right = cols[2];
 
-    // ── Left: numbers + top artists ───────────────────────────────────────────
+
     let left_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(11), Constraint::Min(0)])
@@ -383,7 +381,7 @@ fn render_stats(frame: &mut Frame, area: Rect, state: &AppState) {
         ACCENT,
     );
 
-    // ── Right: time breakdown + top albums ────────────────────────────────────
+
     let right_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(9), Constraint::Min(0)])
@@ -520,7 +518,7 @@ fn render_time_card(frame: &mut Frame, area: Rect, stats: &crate::services::spot
     );
 }
 
-// ── Commands section ──────────────────────────────────────────────────────────
+
 
 fn render_commands(frame: &mut Frame, area: Rect, _state: &AppState) {
     frame.render_widget(Block::default().style(Style::default().bg(BASE)), area);
@@ -612,7 +610,7 @@ fn render_cmd_block(
     );
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 /// Label + value field, left-aligned, consistent label width
 fn fline(label: &'static str, value: impl Into<String>) -> Line<'static> {

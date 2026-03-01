@@ -5,7 +5,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use rspotify::AuthCodePkceSpotify;
-use std::{io, time::Instant};
+use std::{env, io, time::Instant};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
@@ -27,6 +27,10 @@ use ui::trackmenu::TrackAction;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // When running inside a Neovim terminal (via spot-tty.nvim), skip
+    // alt-screen manipulation that fights with nvim's own terminal emulator.
+    // The plugin sets SPOT_TTY_NVIM=1.
+    let in_nvim = env::var("SPOT_TTY_NVIM").map(|v| v == "1").unwrap_or(false);
     let log = std::fs::File::create("/tmp/spot-tty.log")?;
     tracing_subscriber::fmt()
         .with_writer(log)
@@ -43,7 +47,9 @@ async fn main() -> anyhow::Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    if !in_nvim {
+        execute!(stdout, EnterAlternateScreen)?;
+    }
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
@@ -61,7 +67,6 @@ async fn main() -> anyhow::Result<()> {
     let mut fetch_in_progress = false;
 
     loop {
-        // ── Tick ──────────────────────────────────────────────────────────────
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
             if app
@@ -78,7 +83,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // ── Poll playback every 2 s ───────────────────────────────────────────
         if last_poll.elapsed() >= poll_rate {
             last_poll = Instant::now();
             let sp = spotify.clone();
@@ -90,7 +94,6 @@ async fn main() -> anyhow::Result<()> {
             });
         }
 
-        // ── Lazy cover fetching ───────────────────────────────────────────────
         {
             let size = terminal.size().unwrap_or_default();
             let areas = ui::layout::split(size);
@@ -137,7 +140,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // ── Render ────────────────────────────────────────────────────────────
         let overlay_open = matches!(
             app.state.key_mode,
             KeyMode::Search | KeyMode::TrackMenu | KeyMode::Profile
@@ -182,7 +184,6 @@ async fn main() -> anyhow::Result<()> {
         })?;
         app.state.render_cache.flush();
 
-        // ── Events ────────────────────────────────────────────────────────────
         while let Ok(ev) = rx.try_recv() {
             match &ev {
                 AppEvent::ExplorerTracksLoaded(_) => {
@@ -196,7 +197,6 @@ async fn main() -> anyhow::Result<()> {
             app.handle_event(ev);
         }
 
-        // ── Debounced Spotify catalog search ─────────────────────────────────
         if app.state.key_mode == KeyMode::Search {
             let q = app.state.search.query.clone();
             if q != last_search_query {
@@ -230,11 +230,9 @@ async fn main() -> anyhow::Result<()> {
             tx.clone(),
         );
 
-        // ── Input ─────────────────────────────────────────────────────────────
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
                 match app.state.key_mode {
-                    // ── Search overlay input ───────────────────────────────────
                     KeyMode::Search => {
                         match key.code {
                             KeyCode::Esc => {
@@ -246,7 +244,6 @@ async fn main() -> anyhow::Result<()> {
                                     fire_play_track(&track, None, &app, &spotify, &tx);
                                 }
                             }
-                            // Arrow keys only for list navigation — j/k type into query
                             KeyCode::Up => {
                                 tx.send(AppEvent::MoveUp(1))?;
                             }
@@ -267,13 +264,11 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // ── Track menu overlay input ───────────────────────────────
                     KeyMode::TrackMenu => {
                         match key.code {
                             KeyCode::Esc => {
                                 tx.send(AppEvent::CloseTrackMenu)?;
                             }
-                            // Arrow keys navigate actions; j/k type into filter
                             KeyCode::Up => {
                                 tx.send(AppEvent::MoveUp(1))?;
                             }
@@ -304,13 +299,11 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // ── Profile overlay input ──────────────────────────────────────
                     KeyMode::Profile => {
                         match key.code {
                             KeyCode::Esc | KeyCode::Char('p') => {
                                 tx.send(AppEvent::CloseProfile)?;
                             }
-                            // j/k switch sections; clear logout focus first
                             KeyCode::Up | KeyCode::Char('k') => {
                                 app.state.profile.logout_sel = false;
                                 tx.send(AppEvent::MoveUp(1))?;
@@ -319,7 +312,6 @@ async fn main() -> anyhow::Result<()> {
                                 app.state.profile.logout_sel = false;
                                 tx.send(AppEvent::MoveDown(1))?;
                             }
-                            // Tab toggles logout button focus when in Profile section
                             KeyCode::Tab | KeyCode::BackTab => {
                                 if app.state.profile.section == ui::profile::ProfileSection::Profile
                                 {
@@ -328,12 +320,10 @@ async fn main() -> anyhow::Result<()> {
                             }
                             KeyCode::Enter => {
                                 if app.state.profile.logout_sel {
-                                    // confirmed — fire logout
                                     tx.send(AppEvent::ProfileLogout)?;
                                 } else if app.state.profile.section
                                     == ui::profile::ProfileSection::Profile
                                 {
-                                    // first Enter → focus the logout button
                                     app.state.profile.logout_sel = true;
                                 }
                             }
@@ -341,9 +331,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // ── Normal + AwaitingG ─────────────────────────────────────
                     KeyMode::Normal | KeyMode::AwaitingG => {
-                        // Digits go to prefix counter (only in Normal mode)
                         if app.state.key_mode == KeyMode::Normal {
                             if let KeyCode::Char(c) = key.code {
                                 if c.is_ascii_digit() {
@@ -358,7 +346,6 @@ async fn main() -> anyhow::Result<()> {
 
                         match app.state.key_mode {
                             KeyMode::Normal => match key.code {
-                                // Motion
                                 KeyCode::Char('j') | KeyCode::Down => {
                                     tx.send(AppEvent::MoveDown(count))?
                                 }
@@ -368,12 +355,10 @@ async fn main() -> anyhow::Result<()> {
                                 KeyCode::Char('G') => tx.send(AppEvent::GoBottom)?,
                                 KeyCode::Char('M') => tx.send(AppEvent::GoMiddle)?,
                                 KeyCode::Char('g') => app.state.key_mode = KeyMode::AwaitingG,
-                                // Focus
                                 KeyCode::Char('l') | KeyCode::Right => tx.send(AppEvent::Enter)?,
                                 KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
                                     tx.send(AppEvent::Back)?
                                 }
-                                // Play on Enter
                                 KeyCode::Enter => {
                                     if app.state.focus == Focus::Explorer {
                                         fire_play(&app, &spotify, &tx);
@@ -408,11 +393,9 @@ async fn main() -> anyhow::Result<()> {
                                         }
                                     });
                                 }
-                                // Search overlay
                                 KeyCode::Char('/') => {
                                     tx.send(AppEvent::OpenSearch)?;
                                 }
-                                // Track menu (only in Explorer)
                                 KeyCode::Char('p') => {
                                     tx.send(AppEvent::OpenProfile)?;
                                     let sp = spotify.clone();
@@ -455,12 +438,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    if !in_nvim {
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    }
     terminal.show_cursor()?;
     Ok(())
 }
-
-// ── Toast renderer ─────────────────────────────────────────────────────────────
 
 fn render_toast(f: &mut ratatui::Frame, msg: &str) {
     use ratatui::{
@@ -493,8 +476,6 @@ fn render_toast(f: &mut ratatui::Frame, msg: &str) {
         toast_area,
     );
 }
-
-// ── Play helpers ──────────────────────────────────────────────────────────────
 
 fn fire_play(app: &App, spotify: &AuthCodePkceSpotify, tx: &mpsc::UnboundedSender<AppEvent>) {
     let idx = app.state.explorer_selected_index;
@@ -622,8 +603,6 @@ fn fire_track_action(
     }
 }
 
-// ── Startup ───────────────────────────────────────────────────────────────────
-
 fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender<AppEvent>) {
     {
         let (sp, tx) = (spotify.clone(), tx.clone());
@@ -681,8 +660,6 @@ fn spawn_initial_fetches(spotify: AuthCodePkceSpotify, tx: mpsc::UnboundedSender
         });
     }
 }
-
-// ── Explorer fetch ────────────────────────────────────────────────────────────
 
 fn maybe_fetch_explorer(
     current: &Option<ExplorerNode>,

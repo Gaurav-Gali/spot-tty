@@ -11,8 +11,8 @@ use ratatui::{
 const ROW_COVER_W: u16 = 4;
 const ROW_COVER_H: u16 = 2;
 const DETAIL_PANEL_W: u16 = 32;
-const DETAIL_COVER_W: u16 = 30;
-const DETAIL_COVER_H: u16 = 15;
+const DETAIL_COVER_W: u16 = 42;
+const DETAIL_COVER_H: u16 = 21;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut RenderCache) {
     let is_active = state.focus == Focus::Explorer;
@@ -57,8 +57,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut Rende
     }
 }
 
-/// Returns URLs of covers visible on screen right now — used by main.rs for
-/// lazy fetching. Selected track's URL is always first (highest priority).
 pub fn visible_cover_urls(state: &AppState, area: Rect) -> Vec<String> {
     if state.explorer_items.is_empty() {
         return vec![];
@@ -77,7 +75,6 @@ pub fn visible_cover_urls(state: &AppState, area: Rect) -> Vec<String> {
         .filter_map(|t| t.album_image_url.clone())
         .collect();
 
-    // Selected track first — needed for detail panel
     if let Some(url) = state
         .explorer_items
         .get(sel)
@@ -100,7 +97,6 @@ fn render_split(
     let is_compact = area.width < 120;
 
     if !is_compact {
-        // Wide: [row covers | table | detail panel]
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -114,7 +110,6 @@ fn render_split(
         render_row_covers(frame, layout[0], state, cache);
         render_detail(frame, layout[2], state, cache, false);
     } else {
-        // Compact: [table / detail stacked]
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(6), Constraint::Length(10)])
@@ -163,13 +158,11 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState, is_active: bool
             let is_playing = !t.id.is_empty() && state.is_playing_track(&t.id);
 
             let style = if is_sel && is_active {
-                // Selected cursor row
                 Style::default()
                     .bg(Color::Rgb(60, 65, 80))
                     .fg(Color::Rgb(245, 224, 220))
                     .add_modifier(Modifier::BOLD)
             } else if is_playing {
-                // Currently playing — green tint, not selected
                 Style::default()
                     .fg(Color::Rgb(137, 180, 130))
                     .add_modifier(Modifier::BOLD)
@@ -265,12 +258,16 @@ fn render_detail(
     };
     let protocol = state.image_protocol;
 
-    let cover_h = if compact { 5u16 } else { DETAIL_COVER_H };
-    let cover_h = cover_h.min(inner.height);
+    // Keep square in pixel space (terminal cells ~2:1 tall:wide, so rows = cols/2)
     let cover_w = if compact {
-        inner.width.min(20)
+        inner.width.min(24)
     } else {
         DETAIL_COVER_W.min(inner.width)
+    };
+    let cover_h = if compact {
+        5u16
+    } else {
+        (cover_w / 2).min(DETAIL_COVER_H).min(inner.height)
     };
 
     let rows = Layout::default()
@@ -278,8 +275,10 @@ fn render_detail(
         .constraints([Constraint::Length(cover_h), Constraint::Min(0)])
         .split(inner);
 
+    // Center the cover horizontally in the panel
+    let x_off = inner.width.saturating_sub(cover_w) / 2;
     let cover_rect = Rect {
-        x: inner.x,
+        x: inner.x + x_off,
         y: rows[0].y,
         width: cover_w,
         height: cover_h,

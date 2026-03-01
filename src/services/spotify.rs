@@ -1,4 +1,4 @@
-//! Raw Spotify HTTP client (bypasses rspotify models; Feb-2026 API compatible).
+//! Spotify HTTP client
 use anyhow::{bail, Context, Result};
 use rspotify::{prelude::*, AuthCodePkceSpotify};
 use serde::Deserialize;
@@ -8,8 +8,6 @@ use tracing::{info, warn};
 const BASE: &str = "https://api.spotify.com/v1";
 const PAGE: u32 = 50;
 const MAX_RETRIES: u32 = 4;
-
-// ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default)]
 pub struct UserProfile {
@@ -52,8 +50,6 @@ pub struct TrackSummary {
     pub album_image_url: Option<String>,
     pub duration_ms: u32,
 }
-
-// ── Raw JSON shapes ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct Page<T> {
@@ -118,15 +114,11 @@ struct RawSaved {
     track: RawTrack,
 }
 
-// ── Token ─────────────────────────────────────────────────────────────────────
-
 async fn token(sp: &AuthCodePkceSpotify) -> Result<String> {
     sp.auto_reauth().await.ok();
     let g = sp.token.lock().await.unwrap();
     Ok(g.as_ref().context("no token")?.access_token.clone())
 }
-
-// ── GET with 429 retry ────────────────────────────────────────────────────────
 
 async fn get<T: for<'de> Deserialize<'de>>(
     client: &reqwest::Client,
@@ -160,8 +152,6 @@ async fn get<T: for<'de> Deserialize<'de>>(
     }
 }
 
-// ── Public fetch functions ────────────────────────────────────────────────────
-
 pub async fn fetch_user(sp: &AuthCodePkceSpotify) -> Result<UserProfile> {
     #[derive(Deserialize)]
     struct Me {
@@ -191,7 +181,6 @@ pub async fn fetch_user(sp: &AuthCodePkceSpotify) -> Result<UserProfile> {
     })
 }
 
-/// Compute interesting stats from already-fetched data (no extra API calls).
 pub fn compute_stats(
     _profile: &UserProfile,
     playlists: &[PlaylistSummary],
@@ -331,8 +320,6 @@ pub async fn fetch_liked_tracks(sp: &AuthCodePkceSpotify) -> Result<Vec<TrackSum
     Ok(results)
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 fn best_image(images: Option<&[RawImage]>) -> Option<String> {
     let imgs = images?;
     if imgs.is_empty() {
@@ -366,9 +353,6 @@ fn to_summary(t: &RawTrack) -> TrackSummary {
     }
 }
 
-// ── Playback ──────────────────────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
 pub struct PlaybackState {
     pub track_id: String,
     pub track_name: String,
@@ -381,10 +365,6 @@ pub struct PlaybackState {
     pub device_id: Option<String>,
 }
 
-/// PUT /me/player/play — start playing a specific track.
-/// `context_uri` is the playlist URI (e.g. "spotify:playlist:xxx") so Spotify
-/// knows the queue context. `track_uri` is "spotify:track:xxx".
-/// Pass `context_uri = None` to play the track without a queue context.
 pub async fn play_track(
     sp: &AuthCodePkceSpotify,
     track_uri: &str,
@@ -419,14 +399,12 @@ pub async fn pause(sp: &AuthCodePkceSpotify) -> Result<()> {
     put_no_body(&c, &format!("{BASE}/me/player/pause"), &tok, None).await
 }
 
-/// PUT /me/player/play (no body = resume)
 pub async fn resume(sp: &AuthCodePkceSpotify) -> Result<()> {
     let tok = token(sp).await?;
     let c = reqwest::Client::new();
     put_no_body(&c, &format!("{BASE}/me/player/play"), &tok, None).await
 }
 
-/// GET /me/player — current playback state
 pub async fn fetch_playback_state(sp: &AuthCodePkceSpotify) -> Result<Option<PlaybackState>> {
     #[derive(Deserialize)]
     struct Player {
@@ -501,8 +479,6 @@ pub async fn fetch_playback_state(sp: &AuthCodePkceSpotify) -> Result<Option<Pla
     }))
 }
 
-// ── PUT helper ────────────────────────────────────────────────────────────────
-
 async fn put_no_body(
     client: &reqwest::Client,
     url: &str,
@@ -533,9 +509,6 @@ async fn put_no_body(
     }
 }
 
-// ── Skip next / prev ─────────────────────────────────────────────────────────
-
-/// POST /me/player/next — skip to next track
 pub async fn skip_next(sp: &AuthCodePkceSpotify) -> Result<()> {
     let tok = token(sp).await?;
     let resp = reqwest::Client::new()
@@ -581,8 +554,6 @@ pub async fn skip_prev(sp: &AuthCodePkceSpotify) -> Result<()> {
     }
 }
 
-// ── Device listing ────────────────────────────────────────────────────────────
-
 #[derive(Clone, Debug)]
 pub struct Device {
     pub id: String,
@@ -590,7 +561,6 @@ pub struct Device {
     pub is_active: bool,
 }
 
-/// GET /me/player/devices — all available devices
 pub async fn fetch_devices(sp: &AuthCodePkceSpotify) -> Result<Vec<Device>> {
     #[derive(Deserialize)]
     struct Resp {
@@ -618,11 +588,6 @@ pub async fn fetch_devices(sp: &AuthCodePkceSpotify) -> Result<Vec<Device>> {
         .collect())
 }
 
-// ── Track actions ─────────────────────────────────────────────────────────────
-
-/// PUT /me/tracks — save (like) a track
-/// Spotify requires IDs in the JSON body, NOT as query params.
-/// POST /me/player/queue — add track to queue
 pub async fn add_to_queue(sp: &AuthCodePkceSpotify, track_id: &str) -> Result<()> {
     let tok = token(sp).await?;
     let c = reqwest::Client::new();
@@ -644,17 +609,10 @@ pub async fn add_to_queue(sp: &AuthCodePkceSpotify, track_id: &str) -> Result<()
     }
 }
 
-/// GET /me/tracks — search all liked tracks in memory (already fetched)
-/// This just returns what we already have; real search is done in-process.
 pub async fn fetch_all_tracks_for_search(sp: &AuthCodePkceSpotify) -> Result<Vec<TrackSummary>> {
-    // Re-use the liked tracks fetch
     fetch_liked_tracks(sp).await
 }
 
-// ── Spotify catalog search ────────────────────────────────────────────────────
-
-/// GET /search — search Spotify's full catalog for tracks.
-/// Returns up to `limit` results (max 50).
 pub async fn search_tracks(
     sp: &AuthCodePkceSpotify,
     query: &str,

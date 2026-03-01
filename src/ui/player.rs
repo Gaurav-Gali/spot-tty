@@ -11,7 +11,7 @@ use ratatui::{
 const N_BARS: usize = 10;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
-    // ── Title line ────────────────────────────────────────────────────────────
+
     let breadcrumb = match state.explorer_stack.last() {
         Some(ExplorerNode::PlaylistTracks(_, name, _)) => format!("Library › {} ", name),
         Some(ExplorerNode::LikedTracks) => "Library › Liked Songs ".to_string(),
@@ -72,7 +72,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let sweep_area = layout[1];
     let visualizer_area = layout[3];
 
-    // ── Progress bar ──────────────────────────────────────────────────────────
+
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(20, 35, 20))),
         sweep_area,
@@ -90,7 +90,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         );
     }
 
-    // ── Playhead ──────────────────────────────────────────────────────────────
+
     let playhead_str = match &state.playback {
         Some(p) => {
             let icon = if p.is_playing { "▶" } else { "⏸" };
@@ -108,7 +108,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         playhead_area,
     );
 
-    // ── Visualizer ────────────────────────────────────────────────────────────
+
     let is_playing = state
         .playback
         .as_ref()
@@ -117,7 +117,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     render_visualizer(frame, visualizer_area, state.visualizer_phase, is_playing);
 }
 
-// ── Visualizer renderer ───────────────────────────────────────────────────────
+
 //
 // Each bar is driven by a smooth sine wave with a unique frequency and phase.
 // Because we write one cell per bar directly into ratatui's buffer, each bar

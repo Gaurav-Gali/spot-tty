@@ -52,7 +52,6 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             check_ready(state);
         }
 
-        // ── Navigation ────────────────────────────────────────────────────────
         AppEvent::MoveDown(n) => {
             move_cursor(state, n as isize);
             state.last_nav_move = Some(Instant::now());
@@ -96,7 +95,6 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             state.last_nav_move = Some(Instant::now());
         }
 
-        // ── Playback ──────────────────────────────────────────────────────────
         AppEvent::PlayTrack { context_uri, .. } => {
             state.playing_context_uri = context_uri;
         }
@@ -106,7 +104,6 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             }
         }
         AppEvent::SkipNext => {
-            // Optimistically clear progress — real state arrives on next poll
             if let Some(p) = &mut state.playback {
                 p.progress_ms = 0;
             }
@@ -123,7 +120,6 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             state.devices = devs;
         }
 
-        // ── Search overlay ────────────────────────────────────────────────────
         AppEvent::OpenSearch => {
             state.key_mode = KeyMode::Search;
             state.search.query.clear();
@@ -139,14 +135,13 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             let tracks = state.all_tracks.clone();
             state.search.update_local(&tracks);
             if !state.search.query.is_empty() {
-                state.search.is_searching = true; // spinner until catalog arrives
+                state.search.is_searching = true;
             }
         }
         AppEvent::SearchCatalogResults(results) => {
             state.search.merge_catalog(results);
         }
 
-        // ── Track menu overlay ────────────────────────────────────────────────
         AppEvent::OpenTrackMenu => {
             if let Some(track) = state
                 .explorer_items
@@ -165,11 +160,8 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             state.track_menu.query = q;
             state.track_menu.rebuild_actions();
         }
-        AppEvent::TrackMenuConfirm => {
-            // Handled directly in main.rs (needs spotify handle)
-        }
+        AppEvent::TrackMenuConfirm => {}
 
-        // ── Profile overlay ───────────────────────────────────────────────────
         AppEvent::OpenProfile => {
             state.key_mode = crate::app::state::KeyMode::Profile;
         }
@@ -183,13 +175,11 @@ pub fn reduce(state: &mut AppState, event: AppEvent) {
             state.profile.prev_section();
         }
         AppEvent::ProfileLogout => {
-            // Delete cached token — next launch will trigger fresh OAuth
             let path = crate::services::auth::token_cache_path();
             let _ = std::fs::remove_file(&path);
             state.should_quit = true;
         }
 
-        // ── Toast ─────────────────────────────────────────────────────────────
         AppEvent::Toast(msg) => {
             state.show_toast(msg);
         }

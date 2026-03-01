@@ -1,13 +1,4 @@
-//! Track action menu — opened with `i` on a selected track in the Explorer.
-//!
-//! Shows a fuzzy-filterable list of actions:
-//!   ♥  Like / Unlike
-//!   +  Add to queue
-//!   ↗  Add to playlist  (expands into a sub-list of playlists)
-//!   ▶  Play now
-//!   ✕  Cancel
-//!
-//! Typing narrows the action list. Enter confirms. Esc closes.
+//! Track action menu.
 
 use crate::app::state::AppState;
 use crate::services::spotify::TrackSummary;
@@ -19,8 +10,6 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
-
-// ── Action definitions ────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TrackAction {
@@ -37,7 +26,7 @@ impl TrackAction {
     }
 }
 
-// ── Menu state ────────────────────────────────────────────────────────────────
+
 
 #[derive(Default, Clone)]
 pub struct TrackMenuState {
@@ -82,7 +71,7 @@ impl TrackMenuState {
     }
 }
 
-// ── Renderer ──────────────────────────────────────────────────────────────────
+
 
 pub fn render(frame: &mut Frame, state: &AppState) {
     let menu = &state.track_menu;
@@ -116,7 +105,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         ])
         .split(inner);
 
-    // ── Track info strip ──────────────────────────────────────────────────────
+
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -132,7 +121,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         layout[0],
     );
 
-    // ── Filter input ──────────────────────────────────────────────────────────
+
     frame.render_widget(
         Paragraph::new(format!(" {} ", menu.query))
             .style(Style::default().fg(Color::Rgb(245, 224, 220)))
@@ -148,7 +137,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         layout[1],
     );
 
-    // ── Actions list ──────────────────────────────────────────────────────────
+
     let sel = menu.selected;
     let items: Vec<ListItem> = menu
         .actions
@@ -215,7 +204,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         &mut list_state,
     );
 
-    // ── Hints ─────────────────────────────────────────────────────────────────
+
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(

@@ -65,8 +65,6 @@ pub async fn authenticate(
 
     let mut spotify = build_client(client_id, client_secret, redirect_uri);
 
-    // ── Try cached token ──────────────────────────────────────────────────
-    // Required scopes — if the cached token is missing any we must re-auth.
     let required_scopes = [
         "user-read-private",
         "user-read-email",
@@ -86,8 +84,6 @@ pub async fn authenticate(
         match spotify.read_token_cache(true).await {
             Ok(Some(token)) => {
                 info!("Loaded token from cache");
-
-                // Check scopes before trusting the token
                 let token_scopes = token.scopes.clone();
                 let has_all_scopes = required_scopes
                     .iter()
@@ -95,7 +91,6 @@ pub async fn authenticate(
 
                 if !has_all_scopes {
                     warn!("Cached token missing required scopes — re-authenticating");
-                    // Delete stale cache so fresh flow runs below
                     let _ = std::fs::remove_file(token_cache_path());
                 } else {
                     *spotify.token.lock().await.unwrap() = Some(token);
@@ -115,7 +110,6 @@ pub async fn authenticate(
         }
     }
 
-    // ── Full PKCE flow ────────────────────────────────────────────────────
     let auth_url = spotify.get_authorize_url(None)?;
 
     if let Err(e) = open::that(&auth_url) {

@@ -99,8 +99,6 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut
         };
         match pl.image_url.as_ref().and_then(|u| state.cover_cache.get(u)) {
             Some(img) => {
-                // Write stable sentinel cells so ratatui's diff never repaints
-                // these cells as blank, eliminating flicker.
                 write_image_sentinel(frame, cover_rect);
                 img.render(frame, cover_rect, protocol, cache);
             }
@@ -208,10 +206,7 @@ fn trunc(s: &str, max: usize) -> String {
     s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
 }
 
-/// Render sidebar without any cover images — used when an overlay is open
-/// so Kitty images don't bleed through the modal.
 pub fn render_no_images(frame: &mut Frame, area: Rect, state: &AppState) {
     let mut dummy = RenderCache::default();
     render(frame, area, state, &mut dummy);
-    // dummy.pending is discarded — no images queued
 }
