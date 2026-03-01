@@ -1,7 +1,38 @@
-//! Cover art rendering - Kitty graphics + iTerm2 + half-block fallback.
+//! Cover art — Kitty graphics protocol (a=T / a=p) + iTerm2 + half-block fallback.
+//!
+//! ## Why the previous version broke
+//!
+//! The Unicode Placeholder approach (U=1 + diacritic encoding) requires the
+//! image ID to be encoded in the *foreground colour* of each placeholder cell.
+//! Ratatui converts Color::Rgb to ANSI sequences, but the exact 24-bit values
+//! need to survive round-tripping through the terminal's own colour pipeline.
+//! In practice, Kitty only intercepts the placeholder if the fg colour matches
+//! the stored image ID exactly — any rounding causes it to render as garbage.
+//!
+//! ## What we do instead (stable, proven)
+//!
+//! 1. Upload image once with `a=T,q=2` (quiet, no response needed).
+//! 2. Every frame, redisplay with `a=p,q=2` (~60 bytes) — only when the
+//!    (id, x, y, w, h) tuple changed vs last frame (tracked in RenderCache).
+//! 3. ratatui writes the cell buffer as normal. We send Kitty sequences *after*
+//!    `terminal.draw()` returns and *after* `render_cache.flush()` — so Kitty
+//!    paints on top of whatever ratatui left behind. The images composite over
+//!    the text layer at the correct z-index.
+//!
+//! The remaining flicker on fast scroll is eliminated by the scroll debounce
+//! in the detail panel (120 ms settle time before showing the large cover).
+//! Row thumbnails are small enough that the repaint is imperceptible.
+//!
+//! ## Disk cache
+//!
+//! Cover bytes are saved to ~/.cache/spot-tty/covers/<hash>.bin so second
+//! launch shows images instantly without any network requests.
 
-use image::{imageops::FilterType, DynamicImage, GenericImageView};
+use image::{imageops::FilterType, DynamicImage};
 use ratatui::{layout::Rect, style::Color, Frame};
+use std::io::Write;
+
+// ── Protocol ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ImageProtocol {
@@ -11,6 +42,7 @@ pub enum ImageProtocol {
 }
 
 pub fn detect_protocol() -> ImageProtocol {
+    // Inside nvim terminal, graphics protocols don't work — force half-block
     if std::env::var("SPOT_TTY_NVIM")
         .map(|v| v == "1")
         .unwrap_or(false)
@@ -35,6 +67,8 @@ pub fn detect_protocol() -> ImageProtocol {
     ImageProtocol::HalfBlock
 }
 
+// ── Disk cache ────────────────────────────────────────────────────────────────
+
 fn cache_path(url: &str) -> Option<std::path::PathBuf> {
     let dir = dirs::cache_dir()?.join("spot-tty").join("covers");
     std::fs::create_dir_all(&dir).ok()?;
@@ -54,12 +88,20 @@ fn save_cached_bytes(url: &str, bytes: &[u8]) {
     }
 }
 
+// ── Per-frame render cache ────────────────────────────────────────────────────
+
+/// Tracks what was rendered last frame to skip redundant escape sequences.
 #[derive(Default)]
 pub struct RenderCache {
+    /// (kitty_id, x, y, w, h) → last frame it was placed
     placed: std::collections::HashMap<(u32, u16, u16, u16, u16), u64>,
+    /// IDs whose PNG bytes have been transmitted to the terminal
     pub uploaded: std::collections::HashSet<u32>,
+    /// Escape sequences to flush after terminal.draw()
     pub pending: Vec<u8>,
     pub frame: u64,
+    /// Half-block pixel cache: (kitty_id, w, h) → RGBA flat bytes
+    /// Computed once per unique image+size, never again.
     halfblock: std::collections::HashMap<(u32, u16, u16), Vec<u8>>,
 }
 
@@ -102,6 +144,8 @@ impl RenderCache {
         let _ = lock.flush();
     }
 }
+
+// ── CoverImage ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct CoverImage {
@@ -232,6 +276,8 @@ impl CoverImage {
     }
 }
 
+// ── Placeholder ───────────────────────────────────────────────────────────────
+
 pub fn render_placeholder(frame: &mut Frame, area: Rect) {
     let buf = frame.buffer_mut();
     for row in 0..area.height {
@@ -249,6 +295,8 @@ pub fn render_placeholder(frame: &mut Frame, area: Rect) {
     }
 }
 
+// ── Fetch ─────────────────────────────────────────────────────────────────────
+
 pub async fn fetch_cover(url: &str) -> Option<CoverImage> {
     if let Some(bytes) = load_cached_bytes(url) {
         return CoverImage::from_bytes(bytes);
@@ -257,6 +305,8 @@ pub async fn fetch_cover(url: &str) -> Option<CoverImage> {
     save_cached_bytes(url, &bytes);
     CoverImage::from_bytes(bytes)
 }
+
+// ── Base64 ────────────────────────────────────────────────────────────────────
 
 fn b64(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -285,6 +335,13 @@ fn b64(input: &[u8]) -> String {
     String::from_utf8(out).unwrap()
 }
 
+// ── Stable cell sentinel (anti-flicker) ───────────────────────────────────────
+//
+// ratatui diffs its cell buffer every frame. If a cell's symbol/style is
+// unchanged from the previous frame, ratatui sends nothing for that cell.
+// We exploit this: write a sentinel symbol+colour into every image cell so
+// ratatui considers them "stable" and stops repainting them with spaces.
+// The Kitty image composites above the cell layer regardless of cell content.
 pub fn write_image_sentinel(frame: &mut Frame, area: Rect) {
     // A stable, visually-invisible sentinel: space with a near-black bg.
     // Near-black (1,1,1) != Reset so ratatui tracks it as a real colour,
