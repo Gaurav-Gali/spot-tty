@@ -177,9 +177,9 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState, is_active: bool
                 Style::default().fg(Color::Rgb(200, 200, 210))
             };
 
-            // Number cell: show ♫ for playing track, relative offset otherwise
+            // Number cell: always show relative offset; colour green when playing
             let num_cell = if is_playing {
-                Cell::from(" ♫  ").style(
+                Cell::from(format!("{rel:>4} ")).style(
                     Style::default()
                         .fg(Color::Rgb(137, 180, 130))
                         .add_modifier(Modifier::BOLD),
@@ -347,4 +347,11 @@ fn trunc(s: &str, max: usize) -> String {
         return s.to_string();
     }
     s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+}
+
+/// Render explorer without any cover images — used when an overlay is open.
+pub fn render_no_images(frame: &mut Frame, area: Rect, state: &AppState) {
+    let mut dummy = RenderCache::default();
+    render(frame, area, state, &mut dummy);
+    // dummy.pending is discarded — no images queued
 }

@@ -18,9 +18,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut Rende
         .split(area);
 
     let name = state.user_name.as_deref().unwrap_or("Connecting…");
-
     frame.render_widget(
-        Paragraph::new(format!(" {name}"))
+        Paragraph::new(format!(" {name} (press 'p')"))
             .style(Style::default().fg(Color::Rgb(205, 214, 244)))
             .block(
                 Block::default()
@@ -66,33 +65,18 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut
     }
 
     let sel = state.navigation.selected_index;
-    let total = state.playlists.len();
-
     let visible_rows = (inner.height / COVER_H) as usize;
-    let visible_rows = visible_rows.max(1);
-
-    // Proper scroll calculation
-    let mut scroll = 0;
-
-    if sel >= visible_rows {
-        scroll = sel + 1 - visible_rows;
-    }
-
-    if scroll + visible_rows > total {
-        scroll = total.saturating_sub(visible_rows);
-    }
-
+    let scroll = sel.saturating_sub(visible_rows.saturating_sub(1));
     let protocol = state.image_protocol;
 
-    for (i, pl) in state
+    for (slot, pl) in state
         .playlists
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_rows)
     {
-        let row_y = inner.y + ((i - scroll) as u16 * COVER_H);
-
+        let row_y = inner.y + (slot as u16 * COVER_H);
         if row_y + COVER_H > inner.y + inner.height {
             break;
         }
@@ -113,23 +97,24 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut
             width: COVER_W,
             height: COVER_H,
         };
-
         match pl.image_url.as_ref().and_then(|u| state.cover_cache.get(u)) {
             Some(img) => {
+                // Write stable sentinel cells so ratatui's diff never repaints
+                // these cells as blank, eliminating flicker.
                 write_image_sentinel(frame, cover_rect);
                 img.render(frame, cover_rect, protocol, cache);
             }
             None => render_placeholder(frame, cover_rect),
         }
 
+        let i = slot + scroll;
         let is_sel = i == sel;
-
+        let rel = (i as isize - sel as isize).unsigned_abs();
         let bg = if is_sel && is_active {
             Color::Rgb(60, 65, 80)
         } else {
             Color::Reset
         };
-
         let name_s = if is_sel && is_active {
             Style::default()
                 .fg(Color::Rgb(245, 224, 220))
@@ -138,10 +123,8 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut
         } else {
             Style::default().fg(Color::Rgb(180, 180, 190)).bg(bg)
         };
-
         let dim = Style::default().fg(Color::Rgb(100, 100, 110)).bg(bg);
         let num = Style::default().fg(Color::Rgb(88, 91, 112)).bg(bg);
-
         let text_rect = Rect {
             x: cols[1].x + 1,
             y: cols[1].y,
@@ -152,7 +135,7 @@ fn render_playlists(frame: &mut Frame, area: Rect, state: &AppState, cache: &mut
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled(format!("{:>3} │ ", i + 1), num),
+                    Span::styled(format!("{rel:>3} │ "), num),
                     Span::styled(trunc(&pl.name, text_rect.width as usize - 6), name_s),
                 ]),
                 Line::from(vec![
@@ -179,7 +162,7 @@ fn render_liked(frame: &mut Frame, area: Rect, state: &AppState) {
     let is_active = state.focus == Focus::Sidebar;
     let pl_len = state.playlists.len();
     let selected = state.navigation.selected_index == pl_len;
-
+    let rel = (pl_len as isize - state.navigation.selected_index as isize).unsigned_abs();
     let hl = if is_active && selected {
         Style::default()
             .bg(Color::Rgb(60, 65, 80))
@@ -191,20 +174,17 @@ fn render_liked(frame: &mut Frame, area: Rect, state: &AppState) {
             .fg(Color::Rgb(120, 120, 130))
             .add_modifier(Modifier::DIM)
     };
-
     let item = ListItem::new(Line::from(vec![
         Span::styled(
-            format!("{:>3} │ ", pl_len + 1),
+            format!("{rel:>3} │ "),
             Style::default().fg(Color::Rgb(88, 91, 112)),
         ),
         Span::raw("♥  Liked Songs"),
     ]));
-
     let mut ls = ListState::default();
     if selected {
         ls.select(Some(0));
     }
-
     frame.render_stateful_widget(
         List::new(vec![item])
             .block(
@@ -222,10 +202,16 @@ fn trunc(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
-
     if s.chars().count() <= max {
         return s.to_string();
     }
-
     s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+}
+
+/// Render sidebar without any cover images — used when an overlay is open
+/// so Kitty images don't bleed through the modal.
+pub fn render_no_images(frame: &mut Frame, area: Rect, state: &AppState) {
+    let mut dummy = RenderCache::default();
+    render(frame, area, state, &mut dummy);
+    // dummy.pending is discarded — no images queued
 }

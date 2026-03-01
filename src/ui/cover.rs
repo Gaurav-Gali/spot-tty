@@ -116,6 +116,15 @@ impl RenderCache {
             .insert((kid, area.x, area.y, area.width, area.height), self.frame);
     }
 
+    /// Delete all Kitty images from the terminal screen and reset tracking.
+    /// Call this when an overlay opens so images don't bleed through.
+    pub fn clear_kitty_images(&mut self) {
+        // a=d,d=A = delete all images from the screen (does not free GPU memory)
+        self.pending.extend_from_slice(b"\x1b_Ga=d,d=A,q=2;\x1b\\");
+        // Reset placement tracking so images re-draw correctly after overlay closes
+        self.placed.clear();
+    }
+
     pub fn flush(&self) {
         if self.pending.is_empty() {
             return;

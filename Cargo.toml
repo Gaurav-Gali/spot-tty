@@ -57,3 +57,4 @@ image = { version = "0.25", default-features = false, features = [
   "jpeg",
   "png",
 ] }
+urlencoding = "2"

@@ -11,10 +11,27 @@ const MAX_RETRIES: u32 = 4;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct UserProfile {
     pub display_name: String,
     pub id: String,
+    pub email: Option<String>,
+    pub country: Option<String>,
+    pub product: Option<String>, // "premium" | "free"
+    pub followers: u32,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct UserStats {
+    pub total_liked: u32,
+    pub total_playlists: u32,
+    pub owned_playlists: u32,
+    pub unique_artists: u32,
+    pub unique_albums: u32,
+    pub total_duration_ms: u64,
+    pub top_artists: Vec<String>, // derived from liked tracks
+    pub top_albums: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -150,14 +167,70 @@ pub async fn fetch_user(sp: &AuthCodePkceSpotify) -> Result<UserProfile> {
     struct Me {
         id: String,
         display_name: Option<String>,
+        email: Option<String>,
+        country: Option<String>,
+        product: Option<String>,
+        followers: Option<Followers>,
+        images: Option<Vec<RawImage>>,
+    }
+    #[derive(Deserialize)]
+    struct Followers {
+        total: u32,
     }
     let tok = token(sp).await?;
     let c = reqwest::Client::new();
     let me: Me = get(&c, &format!("{BASE}/me"), &tok).await?;
     Ok(UserProfile {
-        display_name: me.display_name.unwrap_or_else(|| me.id.clone()),
+        display_name: me.display_name.clone().unwrap_or_else(|| me.id.clone()),
         id: me.id,
+        email: me.email,
+        country: me.country,
+        product: me.product,
+        followers: me.followers.map(|f| f.total).unwrap_or(0),
+        avatar_url: best_image(me.images.as_deref()),
     })
+}
+
+/// Compute interesting stats from already-fetched data (no extra API calls).
+pub fn compute_stats(
+    _profile: &UserProfile,
+    playlists: &[PlaylistSummary],
+    liked: &[TrackSummary],
+) -> UserStats {
+    use std::collections::HashMap;
+    let mut artist_counts: HashMap<&str, u32> = HashMap::new();
+    let mut album_counts: HashMap<&str, u32> = HashMap::new();
+    let mut total_ms = 0u64;
+
+    for t in liked {
+        *artist_counts.entry(t.artist.as_str()).or_default() += 1;
+        *album_counts.entry(t.album.as_str()).or_default() += 1;
+        total_ms += t.duration_ms as u64;
+    }
+
+    let mut artists: Vec<(&str, u32)> = artist_counts.into_iter().collect();
+    artists.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut albums: Vec<(&str, u32)> = album_counts.into_iter().collect();
+    albums.sort_by(|a, b| b.1.cmp(&a.1));
+
+    UserStats {
+        total_liked: liked.len() as u32,
+        total_playlists: playlists.len() as u32,
+        owned_playlists: playlists.iter().filter(|p| p.owner).count() as u32,
+        unique_artists: artists.len() as u32,
+        unique_albums: albums.len() as u32,
+        total_duration_ms: total_ms,
+        top_artists: artists
+            .into_iter()
+            .take(8)
+            .map(|(n, _)| n.to_string())
+            .collect(),
+        top_albums: albums
+            .into_iter()
+            .take(5)
+            .map(|(n, _)| n.to_string())
+            .collect(),
+    }
 }
 
 pub async fn fetch_playlists(
@@ -495,4 +568,165 @@ pub async fn fetch_devices(sp: &AuthCodePkceSpotify) -> Result<Vec<Device>> {
             })
         })
         .collect())
+}
+
+// ── Track actions ─────────────────────────────────────────────────────────────
+
+/// PUT /me/tracks — save (like) a track
+/// Spotify requires IDs in the JSON body, NOT as query params.
+pub async fn like_track(sp: &AuthCodePkceSpotify, track_id: &str) -> Result<()> {
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    let body = serde_json::json!({ "ids": [track_id] });
+    let resp = c
+        .put(format!("{BASE}/me/tracks"))
+        .bearer_auth(&tok)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await?;
+    let s = resp.status().as_u16();
+    if s == 200 || s == 204 {
+        Ok(())
+    } else {
+        bail!(
+            "PUT /me/tracks → {s}: {}",
+            resp.text().await.unwrap_or_default()
+        )
+    }
+}
+
+/// DELETE /me/tracks — unlike a track
+/// Spotify requires IDs in the JSON body, NOT as query params.
+pub async fn unlike_track(sp: &AuthCodePkceSpotify, track_id: &str) -> Result<()> {
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    let body = serde_json::json!({ "ids": [track_id] });
+    let resp = c
+        .delete(format!("{BASE}/me/tracks"))
+        .bearer_auth(&tok)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await?;
+    let s = resp.status().as_u16();
+    if s == 200 || s == 204 {
+        Ok(())
+    } else {
+        bail!(
+            "DELETE /me/tracks → {s}: {}",
+            resp.text().await.unwrap_or_default()
+        )
+    }
+}
+
+/// GET /me/tracks/contains — check if track is liked
+pub async fn is_track_liked(sp: &AuthCodePkceSpotify, track_id: &str) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct Resp(Vec<bool>);
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    // Returns an array like [true] or [false]
+    let text = c
+        .get(format!("{BASE}/me/tracks/contains?ids={track_id}"))
+        .bearer_auth(&tok)
+        .send()
+        .await?
+        .text()
+        .await?;
+    let arr: Vec<bool> = serde_json::from_str(&text).unwrap_or_default();
+    Ok(arr.first().copied().unwrap_or(false))
+}
+
+/// POST /me/player/queue — add track to queue
+pub async fn add_to_queue(sp: &AuthCodePkceSpotify, track_id: &str) -> Result<()> {
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    let url = format!("{BASE}/me/player/queue?uri=spotify:track:{track_id}");
+    let resp = c
+        .post(&url)
+        .bearer_auth(&tok)
+        .header("Content-Length", "0")
+        .send()
+        .await?;
+    let s = resp.status().as_u16();
+    if s == 200 || s == 204 {
+        Ok(())
+    } else {
+        bail!(
+            "POST /me/player/queue → {s}: {}",
+            resp.text().await.unwrap_or_default()
+        )
+    }
+}
+
+/// POST /playlists/{id}/tracks — add track to a playlist
+pub async fn add_to_playlist(
+    sp: &AuthCodePkceSpotify,
+    playlist_id: &str,
+    track_id: &str,
+) -> Result<()> {
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    let body = serde_json::json!({ "uris": [format!("spotify:track:{track_id}")] });
+    let resp = c
+        .post(format!("{BASE}/playlists/{playlist_id}/tracks"))
+        .bearer_auth(&tok)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await?;
+    let s = resp.status().as_u16();
+    if s == 200 || s == 201 {
+        Ok(())
+    } else {
+        bail!("POST /playlists/{playlist_id}/tracks → {s}")
+    }
+}
+
+/// GET /me/tracks — search all liked tracks in memory (already fetched)
+/// This just returns what we already have; real search is done in-process.
+pub async fn fetch_all_tracks_for_search(sp: &AuthCodePkceSpotify) -> Result<Vec<TrackSummary>> {
+    // Re-use the liked tracks fetch
+    fetch_liked_tracks(sp).await
+}
+
+// ── Spotify catalog search ────────────────────────────────────────────────────
+
+/// GET /search — search Spotify's full catalog for tracks.
+/// Returns up to `limit` results (max 50).
+pub async fn search_tracks(
+    sp: &AuthCodePkceSpotify,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<TrackSummary>> {
+    #[derive(Deserialize)]
+    struct SearchResp {
+        tracks: TrackPage,
+    }
+    #[derive(Deserialize)]
+    struct TrackPage {
+        items: Vec<RawTrack>,
+    }
+
+    if query.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    let tok = token(sp).await?;
+    let c = reqwest::Client::new();
+    let url = format!(
+        "{BASE}/search?q={}&type=track&limit={limit}",
+        urlencoding::encode(query)
+    );
+
+    let resp: SearchResp = match get(&c, &url, &tok).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("search_tracks: {e:#}");
+            return Ok(vec![]);
+        }
+    };
+
+    Ok(resp.tracks.items.iter().map(to_summary).collect())
 }

@@ -1,5 +1,9 @@
+use crate::services::spotify::UserProfile;
 use crate::services::spotify::{Device, PlaybackState, PlaylistSummary, TrackSummary};
 use crate::ui::cover::{CoverImage, ImageProtocol, RenderCache};
+use crate::ui::profile::ProfileState;
+use crate::ui::search::SearchState;
+use crate::ui::trackmenu::TrackMenuState;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -20,6 +24,9 @@ pub enum AppStatus {
 pub enum KeyMode {
     Normal,
     AwaitingG,
+    Search,
+    TrackMenu,
+    Profile,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -65,8 +72,19 @@ pub struct AppState {
     // ── Playback ──────────────────────────────────────────────────────────────
     pub playback: Option<PlaybackState>,
     pub playing_context_uri: Option<String>,
-    /// All available Spotify devices (refreshed on startup + after each play)
     pub devices: Vec<Device>,
+
+    // ── Overlays ──────────────────────────────────────────────────────────────
+    pub search: SearchState,
+    pub track_menu: TrackMenuState,
+    pub profile: ProfileState,
+    pub user_profile: Option<UserProfile>,
+
+    /// Flat list of all tracks across liked + all loaded playlists — for search
+    pub all_tracks: Vec<TrackSummary>,
+
+    /// Toast notification shown bottom-right after actions
+    pub toast: Option<(String, Instant)>, // (message, shown_at)
 }
 
 impl AppState {
@@ -90,9 +108,7 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    /// Active device first, then first available, then None.
     pub fn best_device_id(&self) -> Option<String> {
-        // Prefer the device Spotify says is currently active
         if let Some(p) = &self.playback {
             if let Some(id) = &p.device_id {
                 return Some(id.clone());
@@ -103,5 +119,31 @@ impl AppState {
             .find(|d| d.is_active)
             .or_else(|| self.devices.first())
             .map(|d| d.id.clone())
+    }
+
+    /// Merge new tracks into all_tracks, deduplicating by id
+    pub fn merge_tracks(&mut self, tracks: &[TrackSummary]) {
+        let existing: HashSet<String> = self.all_tracks.iter().map(|t| t.id.clone()).collect();
+        for t in tracks {
+            if !t.id.is_empty() && !existing.contains(&t.id) {
+                self.all_tracks.push(t.clone());
+            }
+        }
+    }
+
+    /// Show a toast message for 3 seconds
+    pub fn show_toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    /// Returns active toast if it hasn't expired (3 s TTL)
+    pub fn active_toast(&self) -> Option<&str> {
+        self.toast.as_ref().and_then(|(msg, t)| {
+            if t.elapsed().as_secs() < 3 {
+                Some(msg.as_str())
+            } else {
+                None
+            }
+        })
     }
 }

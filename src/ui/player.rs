@@ -130,7 +130,7 @@ fn render_visualizer(frame: &mut Frame, area: Rect, phase: usize, is_playing: bo
     }
 
     // Max bar height = area height (1 cell = one block character)
-    let max_h = area.height as f64;
+    let _max_h = area.height as f64;
 
     // Compute heights for each bar using smooth sine waves
     let bar_heights: [f64; N_BARS] = {

@@ -31,8 +31,11 @@ pub fn build_client(
             "user-read-private",
             "user-read-email",
             "user-library-read",
+            "user-library-modify",
             "playlist-read-private",
             "playlist-read-collaborative",
+            "playlist-modify-public",
+            "playlist-modify-private",
             "user-follow-read",
             "user-read-playback-state",
             "user-modify-playback-state",
@@ -63,19 +66,47 @@ pub async fn authenticate(
     let mut spotify = build_client(client_id, client_secret, redirect_uri);
 
     // ── Try cached token ──────────────────────────────────────────────────
+    // Required scopes — if the cached token is missing any we must re-auth.
+    let required_scopes = [
+        "user-read-private",
+        "user-read-email",
+        "user-library-read",
+        "user-library-modify",
+        "playlist-read-private",
+        "playlist-read-collaborative",
+        "playlist-modify-public",
+        "playlist-modify-private",
+        "user-follow-read",
+        "user-read-playback-state",
+        "user-modify-playback-state",
+        "user-read-currently-playing",
+    ];
+
     if token_cache_path().exists() {
         match spotify.read_token_cache(true).await {
             Ok(Some(token)) => {
                 info!("Loaded token from cache");
-                *spotify.token.lock().await.unwrap() = Some(token);
 
-                match spotify.current_user().await {
-                    Ok(_) => {
-                        info!("Cached token is valid");
-                        return Ok(spotify);
-                    }
-                    Err(e) => {
-                        warn!("Cached token invalid ({e}), re-authenticating");
+                // Check scopes before trusting the token
+                let token_scopes = token.scopes.clone();
+                let has_all_scopes = required_scopes
+                    .iter()
+                    .all(|s| token_scopes.contains(&s.to_string()));
+
+                if !has_all_scopes {
+                    warn!("Cached token missing required scopes — re-authenticating");
+                    // Delete stale cache so fresh flow runs below
+                    let _ = std::fs::remove_file(token_cache_path());
+                } else {
+                    *spotify.token.lock().await.unwrap() = Some(token);
+                    match spotify.current_user().await {
+                        Ok(_) => {
+                            info!("Cached token valid with all required scopes");
+                            return Ok(spotify);
+                        }
+                        Err(e) => {
+                            warn!("Cached token invalid ({e}), re-authenticating");
+                        }
                     }
                 }
             }

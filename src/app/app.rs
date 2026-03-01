@@ -2,6 +2,9 @@ use super::events::AppEvent;
 use super::reducer::reduce;
 use super::state::{AppState, AppStatus, Focus, KeyMode, NavigationState};
 use crate::ui::cover::{detect_protocol, RenderCache};
+use crate::ui::profile::ProfileState;
+use crate::ui::search::SearchState;
+use crate::ui::trackmenu::TrackMenuState;
 use std::collections::{HashMap, HashSet};
 
 pub struct App {
@@ -40,6 +43,12 @@ impl App {
                 playback: None,
                 playing_context_uri: None,
                 devices: vec![],
+                search: SearchState::default(),
+                track_menu: TrackMenuState::default(),
+                profile: ProfileState::default(),
+                user_profile: None,
+                all_tracks: vec![],
+                toast: None,
             },
         }
     }
