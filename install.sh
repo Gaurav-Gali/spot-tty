@@ -31,10 +31,10 @@ NVIM_LAZY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim/lua/plugins"
 echo -e "${BOLD}"
 echo "  ███████╗██████╗  ██████╗ ████████╗    ████████╗████████╗██╗   ██╗"
 echo "  ██╔════╝██╔══██╗██╔═══██╗╚══██╔══╝       ██╔══╝╚══██╔══╝╚██╗ ██╔╝"
-echo "  ███████╗██████╔╝██║   ██║   ██║    █████╗ ██║      ██║    ╚████╔╝ "
-echo "  ╚════██║██╔═══╝ ██║   ██║   ██║    ╚════╝ ██║      ██║     ╚██╔╝  "
-echo "  ███████║██║     ╚██████╔╝   ██║           ██║      ██║      ██║   "
-echo "  ╚══════╝╚═╝      ╚═════╝    ╚═╝           ╚═╝      ╚═╝      ╚═╝   "
+echo "  ███████╗██████╔╝██║   ██║   ██║    █████╗██║      ██║    ╚████╔╝ "
+echo "  ╚════██║██╔═══╝ ██║   ██║   ██║    ╚════╝██║      ██║     ╚██╔╝  "
+echo "  ███████║██║     ╚██████╔╝   ██║          ██║      ██║      ██║   "
+echo "  ╚══════╝╚═╝      ╚═════╝    ╚═╝          ╚═╝      ╚═╝      ╚═╝   "
 echo -e "${RESET}"
 echo -e "  ${CYAN}Spotify TUI for your terminal — and Neovim${RESET}"
 echo ""
@@ -66,7 +66,7 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 if command -v git &>/dev/null; then
-  git clone --depth=1 "$REPO" "$TMP_DIR/spot-tty" &>/dev/null
+  git clone --depth=1 "$REPO" "$TMP_DIR/spot-tty" || error "Failed to clone $REPO — check your internet connection and that the repo is public"
   success "Cloned repository"
 else
   error "git is required but not installed. Install git and re-run."

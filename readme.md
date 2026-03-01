@@ -1,4 +1,4 @@
-# spot-tty 󰝚
+# spot-tty
 
 A Spotify TUI for your terminal — built with Rust and ratatui.
 Works standalone in any terminal, and as a floating Neovim plugin.
@@ -150,7 +150,7 @@ rm ~/.config/nvim/lua/plugins/spot-tty.lua
 ## Building from source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/spot-tty
+git clone https://github.com/Gaurav-Gali/spot-tty
 cd spot-tty
 cargo build --release
 ln -sf $(pwd)/target/release/spot-tty ~/.local/bin/spot-tty
